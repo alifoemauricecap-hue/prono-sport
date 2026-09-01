@@ -13,6 +13,31 @@ import {
 const SOURCE_ID = 'football-data-couk';
 const BASE = 'https://www.football-data.co.uk';
 
+// POLITESSE & RÉSILIENCE (§5 : respect des sources, jamais de contournement) :
+// depuis certains hébergeurs, la source limite les rafales de téléchargements.
+// On espace donc chaque requête (≥ 2,5 s) et on réessaie avec attente
+// progressive en cas d'échec transitoire. Un 404 (fichier inexistant) n'est
+// jamais réessayé.
+let lastFetchAt = 0;
+const POLITE_GAP_MS = 2500;
+async function politeFetch(url, opts) {
+  const wait = lastFetchAt + POLITE_GAP_MS - Date.now();
+  if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      lastFetchAt = Date.now();
+      return await fetchText(url, opts);
+    } catch (e) {
+      lastErr = e;
+      if (String(e.message).includes('404')) throw e; // saison inexistante : pas un échec réseau
+      await new Promise((r) => setTimeout(r, attempt * 8000));
+      lastFetchAt = Date.now();
+    }
+  }
+  throw lastErr;
+}
+
 // Les cotes présentes dans les CSV sont de vraies cotes publiées par la source.
 const BOOK_1X2 = [
   ['B365', 'Bet365'], ['BW', 'Betway'], ['PS', 'Pinnacle'], ['P', 'Pinnacle'],
@@ -124,7 +149,7 @@ export function seasonFromDate(iso) {
 /** Historique : CSV de saison par division (HistoricalDataProvider) */
 export async function syncHistoricalSeason(seasonCode, divCode) {
   const url = `${BASE}/mmz4281/${seasonCode}/${divCode}.csv`;
-  const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: CONFIG.freshness.historical * 1000 });
+  const { body } = await politeFetch(url, { sourceId: SOURCE_ID, ttlMs: CONFIG.freshness.historical * 1000 });
   const rows = parseCsv(body);
   const count = await ingestChunked(rows, (row) => ingestRow(row, { isFixture: false }));
   // profondeur historique réelle (§18)
@@ -140,7 +165,7 @@ export async function syncHistoricalSeason(seasonCode, divCode) {
 /** Fixtures à venir + cotes réelles (fixtures.csv, mis à jour par la source) */
 export async function syncUpcomingFixtures() {
   const url = `${BASE}/fixtures.csv`;
-  const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: 10 * 60_000 });
+  const { body } = await politeFetch(url, { sourceId: SOURCE_ID, ttlMs: 10 * 60_000 });
   const rows = parseCsv(body);
   const count = await ingestChunked(rows, (row) => ingestRow(row, { isFixture: true }));
   return count;
@@ -226,7 +251,7 @@ export async function syncExtraLeague(code) {
   const meta = CONFIG.extraLeagues[code];
   if (!meta) return 0;
   const url = `${BASE}/new/${meta.file}.csv`;
-  const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: CONFIG.freshness.historical * 1000 });
+  const { body } = await politeFetch(url, { sourceId: SOURCE_ID, ttlMs: CONFIG.freshness.historical * 1000 });
   const rows = parseCsv(body);
   const count = await ingestChunked(rows, (row) => ingestWorldRow(row, code, meta, { isFixture: false }));
   const comp = db.prepare(`SELECT id FROM competitions WHERE code=?`).get(code);
@@ -252,7 +277,7 @@ export async function syncExtraLeagues() {
 /** Fixtures mondiales à venir AVEC cotes réelles (new_league_fixtures.csv) */
 export async function syncWorldFixtures() {
   const url = `${BASE}/new_league_fixtures.csv`;
-  const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: 10 * 60_000 });
+  const { body } = await politeFetch(url, { sourceId: SOURCE_ID, ttlMs: 10 * 60_000 });
   const rows = parseCsv(body);
   const count = await ingestChunked(rows, (row) => {
     const code = COUNTRY_TO_CODE.get((row.Country || '').toLowerCase());

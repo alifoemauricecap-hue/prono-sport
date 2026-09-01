@@ -216,6 +216,26 @@ export function startScheduler() {
   }, 12 * 60 * 1000, 'discoveryRetry');
   // cycle de découverte complet toutes les 6 h
   schedule(runDiscoveryCycle, 6 * 60 * 60 * 1000, 'discoveryFull');
+  // RATTRAPAGE AUTONOME : si le chargement initial a été gêné par la source
+  // (rate limit hébergeur), on complète progressivement — jamais de données
+  // manquantes définitives tant que la source redevient joignable.
+  schedule(async () => {
+    const missingWorld = Object.keys(CONFIG.extraLeagues || {}).filter((code) =>
+      !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+    if (missingWorld.length) {
+      console.log(`[PRONO SPORT] Rattrapage monde : ${missingWorld.length} ligue(s) manquante(s).`);
+      await syncWorldData();
+    }
+    const finished = db.prepare(`SELECT COUNT(*) AS n FROM fixtures WHERE status='FINISHED'`).get().n;
+    // Europe seule ≈ 16 500 matchs sur 3 saisons : en dessous de 15 000,
+    // l'historique est manifestement incomplet → nouvelle passe
+    if (finished < 15000) {
+      console.log(`[PRONO SPORT] Rattrapage historique (${finished} matchs terminés en base).`);
+      await syncHistoricalData();
+      await syncOpenLigaHistory();
+      await generateUpcomingPredictions();
+    }
+  }, 25 * 60 * 1000, 'ingestionRecovery');
   // durabilité : checkpoint WAL toutes les 5 min
   schedule(async () => checkpointWal(), 5 * 60 * 1000, 'walCheckpoint');
   console.log('[PRONO SPORT] Scheduler démarré (live 60s, fixtures 10min, résultats 15min, monde 20min, découverte 6h).');
