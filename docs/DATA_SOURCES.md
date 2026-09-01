@@ -80,27 +80,24 @@ Affichées `DATA UNAVAILABLE` — jamais fabriquées :
 Sportmonks (~39 €+/mois), Opta/Stats Perform (entreprise). L'architecture à adapters
 permet de les brancher sans toucher aux moteurs.
 
-## ESPN (API publique) — ajoutée v1.2
+## ESPN (ajoutée v3.1) + DEEP RESEARCH ENGINE
 
-- **Type** : API JSON publiquement accessible, sans clé ni authentification.
-- **Rôle** : source du **moteur de recherche ciblée** (`src/workers/research.js`) :
-  quand un match programmé n'a pas de pronostic faute d'historique (ex. Saudi
-  Pro League), le moteur reconstitue l'historique réel de la compétition via
-  le scoreboard ESPN (fenêtres de 45 jours, ~2 ans), puis régénère les pronostics.
-- **Couverture vérifiée** (chaque slug testé réellement) : ksa.1 (Saudi Pro League),
-  arg.1, bra.1, chn.1, jpn.1, mex.1, usa.1, aus.1, nor.1, swe.1, den.1, rsa.1, idn.1.
-- **Live** : le worker `espnLive` (2 min) suit les matchs en cours de ces ligues.
-- **Politesse (§5)** : ≥1,5 s entre requêtes, User-Agent identifiable, aucun
-  contournement ; fiabilité mesurée comme toute source (`/api/sources`).
-- **Attribution** : « Résultats et scores : ESPN ».
+**ESPN — API JSON publique de scores** (`site.api.espn.com`, sans clé) :
+- 33 compétitions mappées et vérifiées en ligne (2026-09-01) : les 16 divisions
+  européennes, Saudi Pro League, MLS, Liga MX, Brésil, Argentine, Japon, Chine,
+  A-League, Afrique du Sud, Ligue des Champions, Ligue Europa, Copa Libertadores ;
+- 1 requête = 1 année civile complète d'une ligue (calendrier + résultats + stades) ;
+- statuts live quasi temps réel → étend le suivi en direct au-delà d'OpenLigaDB ;
+- usage poli : ≥1,2 s entre requêtes, cache HTTP, User-Agent identifiable avec
+  URL de contact (format standard des robots) — jamais de contournement.
 
-## Moteur de recherche ciblée (Deep Research Engine)
-
-Toutes les 15 minutes (`researchTargeted`) :
-1. détecte les compétitions avec matchs à venir (7 j) mais historique
-   insuffisant (<60 matchs comp. ou <8 matchs/équipe) ;
-2. cherche une source en ligne vérifiée couvrant la compétition ;
-3. ingère l'historique **réel** (SOURCE DATA, provenance conservée) ;
-4. régénère les pronostics.
-Si aucune source gratuite ne couvre la compétition, le match reste honnêtement
-en « données insuffisantes » — jamais de données inventées.
+**DEEP RESEARCH ENGINE** (`src/engine/research.js`, worker toutes les 15 min) :
+1. détecte chaque match programmé (≤96 h) dont une équipe (<8 matchs réels) ou la
+   compétition (<60 matchs) manque d'historique — mesuré en base, jamais supposé ;
+2. recherche en ligne ciblée : ESPN (2 années de la compétition), puis TheSportsDB
+   (5 derniers matchs de chaque équipe encore en déficit, toutes compétitions) ;
+3. régénère les pronostics des matchs concernés (garde §34 : un pronostic publié
+   n'est jamais réécrit).
+Si après recherche les données restent introuvables, l'application affiche
+toujours l'état honnête « données insuffisantes » — la recherche élargit la
+couverture, elle n'invente rien.

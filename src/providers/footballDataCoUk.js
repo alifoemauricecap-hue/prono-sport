@@ -249,7 +249,7 @@ function ingestWorldRow(row, code, meta, { isFixture }) {
 /** Historique complet d'une ligue mondiale (/new/<FILE>.csv, depuis ~2012) */
 export async function syncExtraLeague(code) {
   const meta = CONFIG.extraLeagues[code];
-  if (!meta) return 0;
+  if (!meta || !meta.file) return 0; // ligues sans CSV : couvertes par ESPN/TheSportsDB
   const url = `${BASE}/new/${meta.file}.csv`;
   const { body } = await politeFetch(url, { sourceId: SOURCE_ID, ttlMs: CONFIG.freshness.historical * 1000 });
   const rows = parseCsv(body);

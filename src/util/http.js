@@ -38,7 +38,9 @@ export async function fetchText(url, { sourceId, ttlMs = 60_000, timeoutMs = 20_
   const cached = memCache.get(url);
   if (cached && Date.now() - cached.at < ttlMs) return { body: cached.body, fromCache: true };
 
-  const headers = { 'User-Agent': 'PronoSport/1.0 (analytics platform)' };
+  // UA au format standard des robots identifiables (nom/version + URL de contact) :
+  // transparence exigée par §5 et requise par certaines sources (ESPN rejette les UA anonymes)
+  const headers = { 'User-Agent': 'PronoSport/3.0 (+https://github.com/alifoemauricecap-hue/prono-sport)' };
   const hc = db.prepare(`SELECT etag, last_modified FROM http_cache WHERE url=?`).get(url);
   if (hc?.etag) headers['If-None-Match'] = hc.etag;
   if (hc?.last_modified) headers['If-Modified-Since'] = hc.last_modified;

@@ -234,3 +234,22 @@ export async function discoverWorldLeagues() {
   const batch = await processDiscoveryBatch();
   return { seeded, ...batch };
 }
+
+/** DEEP RESEARCH — ingestion d'un événement dont la ligue doit être DÉJÀ connue.
+ *  Résout idLeague → compétition via la config ou les ligues découvertes ;
+ *  retourne null si la ligue est inconnue (aucune compétition fantôme créée). */
+export function ingestKnownLeagueEvent(ev) {
+  const idLeague = ev?.idLeague;
+  if (!idLeague || (ev.strSport && ev.strSport !== 'Soccer')) return null;
+  for (const [code, meta] of Object.entries({ ...(CONFIG.divisions || {}), ...(CONFIG.extraLeagues || {}) })) {
+    if (meta.tsdbLeagueId === idLeague) {
+      const competitionId = upsertCompetition(code, meta.name, meta.country);
+      return ingestDynamicEvent(ev, competitionId, { name: meta.name, country: meta.country });
+    }
+  }
+  const dl = db.prepare(`SELECT c.id AS competition_id, dl.name, dl.country
+      FROM discovered_leagues dl JOIN competitions c ON c.code=dl.competition_code
+      WHERE dl.tsdb_id=? AND dl.status='APPROVED'`).get(idLeague);
+  if (dl) return ingestDynamicEvent(ev, dl.competition_id, { name: dl.name, country: dl.country });
+  return null;
+}

@@ -7,10 +7,10 @@ import { registerSources, checkSourceHealth } from '../providers/registry.js';
 import * as fdcuk from '../providers/footballDataCoUk.js';
 import * as tsdb from '../providers/theSportsDb.js';
 import * as oligadb from '../providers/openLigaDb.js';
-import * as espn from '../providers/espn.js';
-import { runTargetedResearch } from './research.js';
 import { generatePrediction, settlePredictions } from '../engine/predictions.js';
 import { updateLivePredictions } from '../engine/live.js';
+import * as espn from '../providers/espn.js';
+import { runDeepResearch } from '../engine/research.js';
 
 export const liveEvents = { listeners: new Set() };
 export function broadcast(type, payload) {
@@ -124,8 +124,8 @@ export async function generateUpcomingPredictions() {
 
 /** Ligues mondiales : historique /new/ + fixtures cotées (football-data.co.uk) */
 export async function syncWorldData() {
-  const missing = Object.keys(CONFIG.extraLeagues || {}).filter((code) =>
-    !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+  const missing = Object.entries(CONFIG.extraLeagues || {}).filter(([code, meta]) =>
+    meta.file && !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
   let total = 0;
   if (missing.length) {
     const r = await runJob('syncExtraLeagues', 'football-data-couk', () => fdcuk.syncExtraLeagues());
@@ -166,14 +166,23 @@ export async function bootstrap() {
     await syncOpenLigaHistory();
   }
   // Couverture mondiale : ingérée si absente (ligues /new/ + fixtures cotées)
-  const worldMissing = Object.keys(CONFIG.extraLeagues || {}).some((code) =>
-    !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+  const worldMissing = Object.entries(CONFIG.extraLeagues || {}).some(([code, meta]) =>
+    meta.file && !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
   if (worldMissing) {
     console.log('[PRONO SPORT] Chargement des ligues mondiales (football-data.co.uk /new/)…');
     const w = await syncWorldData();
     console.log(`[PRONO SPORT] Monde : ${w.total} matchs + ${w.fixtures} fixtures cotées.`);
   } else {
     await runJob('syncWorldFixtures', 'football-data-couk', () => fdcuk.syncWorldFixtures());
+  }
+  // Couverture élargie ESPN : 33 compétitions, 2 années civiles chacune
+  // (dont Saudi Pro League, A-League, UCL, UEL, Libertadores — sans CSV)
+  const espnMissing = Object.keys(espn.espnComps()).filter((code) =>
+    !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+  if (espnMissing.length) {
+    console.log(`[PRONO SPORT] Couverture élargie ESPN (${espnMissing.length} compétitions à créer)…`);
+    const e = await runJob('syncEspnHistory', 'espn', () => espn.syncEspnHistory());
+    console.log(`[PRONO SPORT] ESPN : ${e?.total ?? 0} matchs ingérés (${e?.errors?.length ?? 0} erreurs source).`);
   }
   await syncFixtures();
   await syncResults();
@@ -218,34 +227,32 @@ export function startScheduler() {
   }, 12 * 60 * 1000, 'discoveryRetry');
   // cycle de découverte complet toutes les 6 h
   schedule(runDiscoveryCycle, 6 * 60 * 60 * 1000, 'discoveryFull');
-  // RECHERCHE CIBLÉE : matchs programmés sans pronostic faute d'historique →
-  // recherche en ligne approfondie (ESPN…) pour reconstituer l'historique réel,
-  // puis régénération des pronostics. Première passe 3 min après le démarrage.
-  const research = () => runTargetedResearch({ regenerate: generateUpcomingPredictions });
-  setTimeout(() => research().catch((e) => console.error('[worker researchTargeted]', e.message)), 3 * 60 * 1000);
-  schedule(research, 15 * 60 * 1000, 'researchTargeted');
-  // SUIVI LIVE MONDIAL via ESPN : rafraîchit les ligues rattachées ayant un
-  // match en cours ou imminent (fenêtre -3 h → +30 min), 2 ligues max par tick.
+  // SUIVI DU JOUR ESPN (ciblé) : scores/statuts des ligues jouant aujourd'hui
   schedule(async () => {
-    const active = espn.mappedCompetitions().filter((m) =>
-      db.prepare(`SELECT 1 FROM fixtures WHERE competition_id=?
-          AND ((status IN ('LIVE','HALFTIME','EXTRA_TIME'))
-            OR (status IN ('SCHEDULED','UPCOMING')
-                AND kickoff_utc BETWEEN datetime('now','-3 hour') AND datetime('now','+30 minute')))
-          LIMIT 1`).get(m.competitionId));
-    for (const m of active.slice(0, 2)) {
-      await runJob('syncEspnLive', 'espn', () => espn.syncEspnRecent(m.slug, m.competitionId, m.country));
-    }
-  }, 2 * 60 * 1000, 'espnLive');
+    const r = await runJob('syncEspnToday', 'espn', () => espn.syncEspnToday());
+    if (r?.total) await updateLivePredictions(broadcast);
+  }, 5 * 60 * 1000, 'espnToday');
+  // DEEP RESEARCH ENGINE : recherche en ligne ciblée pour chaque match à venir
+  // qui manque de données (historique équipe/compétition), puis régénération
+  schedule(async () => {
+    const r = await runDeepResearch();
+    if (r?.regenerated) broadcast('research', { gaps: r.gaps, regenerated: r.regenerated });
+  }, 15 * 60 * 1000, 'deepResearch');
   // RATTRAPAGE AUTONOME : si le chargement initial a été gêné par la source
   // (rate limit hébergeur), on complète progressivement — jamais de données
   // manquantes définitives tant que la source redevient joignable.
   schedule(async () => {
-    const missingWorld = Object.keys(CONFIG.extraLeagues || {}).filter((code) =>
-      !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
-    if (missingWorld.length) {
-      console.log(`[PRONO SPORT] Rattrapage monde : ${missingWorld.length} ligue(s) manquante(s).`);
+    const missingCsv = Object.entries(CONFIG.extraLeagues || {}).filter(([code, meta]) =>
+      meta.file && !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+    if (missingCsv.length) {
+      console.log(`[PRONO SPORT] Rattrapage monde : ${missingCsv.length} ligue(s) CSV manquante(s).`);
       await syncWorldData();
+    }
+    const missingEspn = Object.keys(espn.espnComps()).filter((code) =>
+      !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+    if (missingEspn.length) {
+      console.log(`[PRONO SPORT] Rattrapage ESPN : ${missingEspn.length} compétition(s) manquante(s).`);
+      await runJob('syncEspnHistory', 'espn', () => espn.syncEspnHistory());
     }
     const finished = db.prepare(`SELECT COUNT(*) AS n FROM fixtures WHERE status='FINISHED'`).get().n;
     // Europe seule ≈ 16 500 matchs sur 3 saisons : en dessous de 15 000,
