@@ -365,5 +365,9 @@ api.get('/stream', (req, res) => {
 });
 
 api.get('/health', (req, res) => {
-  res.json({ status: 'UP', env: CONFIG.env, at: now() });
+  res.json({
+    status: 'UP', env: CONFIG.env, at: now(),
+    // traçabilité du déploiement (fourni automatiquement par l'hébergeur)
+    commit: (process.env.RENDER_GIT_COMMIT || 'local').slice(0, 7),
+  });
 });
