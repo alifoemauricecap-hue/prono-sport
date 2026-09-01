@@ -26,6 +26,9 @@ services:
       # plus récents par compétition (le backtest reste walk-forward)
       - key: MAX_TRAIN_MATCHES
         value: "2500"
+      # 512 Mo de RAM : GC agressif plutôt qu'un arrêt forcé du conteneur
+      - key: NODE_OPTIONS
+        value: "--max-old-space-size=384"
       # --- option plan payant avec disque persistant ---
       # - key: DB_PATH
       #   value: /app/data/pronosport.db

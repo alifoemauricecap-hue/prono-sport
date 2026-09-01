@@ -12,6 +12,20 @@ export const db = new Database(CONFIG.dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
+// PERFORMANCE (petites instances) : mémoïsation des requêtes préparées.
+// Sans cela, les boucles d'ingestion recompilent la même requête des millions
+// de fois (CPU + mémoire) — cause de crash sur les instances 0,1 CPU / 512 Mo.
+// Sûr ici : SQL constants, aucune itération concurrente (.iterate non utilisé).
+{
+  const rawPrepare = db.prepare.bind(db);
+  const stmtCache = new Map();
+  db.prepare = (sql) => {
+    let s = stmtCache.get(sql);
+    if (!s) { s = rawPrepare(sql); stmtCache.set(sql, s); }
+    return s;
+  };
+}
+
 db.exec(`
 CREATE TABLE IF NOT EXISTS continents (
   id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE NOT NULL

@@ -4,6 +4,17 @@ import crypto from 'node:crypto';
 import { db, now } from '../db.js';
 
 const memCache = new Map(); // cache mémoire court terme { url: { at, body } }
+const MEMCACHE_MAX_ENTRIES = 40;          // borne stricte (instances 512 Mo)
+const MEMCACHE_MAX_BODY = 300 * 1024;     // les gros CSV ne sont pas gardés en RAM
+
+function memCacheSet(url, entry) {
+  if (entry.body && entry.body.length > MEMCACHE_MAX_BODY) return; // trop gros
+  if (memCache.size >= MEMCACHE_MAX_ENTRIES) {
+    const oldest = memCache.keys().next().value;
+    memCache.delete(oldest);
+  }
+  memCache.set(url, entry);
+}
 
 function trackSource(sourceId, ok, latencyMs) {
   if (!sourceId) return;
@@ -42,7 +53,7 @@ export async function fetchText(url, { sourceId, ttlMs = 60_000, timeoutMs = 20_
     if (res.status === 304 && cached) {
       tracked = true;
       trackSource(sourceId, true, latency);
-      memCache.set(url, { at: Date.now(), body: cached.body });
+      memCacheSet(url, { at: Date.now(), body: cached.body });
       return { body: cached.body, fromCache: true };
     }
     if (!res.ok) {
@@ -61,7 +72,7 @@ export async function fetchText(url, { sourceId, ttlMs = 60_000, timeoutMs = 20_
         etag=excluded.etag, last_modified=excluded.last_modified,
         content_hash=excluded.content_hash, fetched_at=excluded.fetched_at`)
       .run(url, etag, lm, hash, now());
-    memCache.set(url, { at: Date.now(), body });
+    memCacheSet(url, { at: Date.now(), body });
     return { body, fromCache: false };
   } catch (e) {
     // Toute défaillance réseau (timeout, DNS, connexion refusée…) est comptée
