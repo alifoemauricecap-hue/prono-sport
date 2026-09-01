@@ -162,7 +162,7 @@ export function normalizeTeamName(raw) {
   if (!raw) return '';
   let s = String(raw).toLowerCase().trim()
     .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // retire les accents
-    .replace(/[._]/g, ' ')
+    .replace(/[-._]/g, ' ') // tirets/points → espaces (« Al-Hilal » ≡ « Al Hilal » entre sources)
     .replace(/\s+/g, ' ')
     .trim();
   if (NORMALIZED_ALIASES[s]) return NORMALIZED_ALIASES[s];
@@ -170,7 +170,8 @@ export function normalizeTeamName(raw) {
   const stripped = s.replace(/^(fc|cf|ac|as|sc|sv|vfb|vfl|rc|cd|ud|us|ss|afc|ogc|krc|kaa|rsc|sk|bsc)\s+/, '')
     .replace(/\s+(fc|cf|sk|bk|if|sc)$/, '');
   if (NORMALIZED_ALIASES[stripped]) return NORMALIZED_ALIASES[stripped];
-  return s;
+  // la forme dépouillée est la forme canonique : « Al-Nassr FC » ≡ « Al Nassr »
+  return stripped || s;
 }
 
 // Les clés d'alias sont elles-mêmes normalisées (accents retirés) pour garantir

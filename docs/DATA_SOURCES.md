@@ -79,3 +79,28 @@ Affichées `DATA UNAVAILABLE` — jamais fabriquées :
 **MISSING DEPENDENCY — alternatives payantes** si besoin : API-Football (~10-30 $/mois),
 Sportmonks (~39 €+/mois), Opta/Stats Perform (entreprise). L'architecture à adapters
 permet de les brancher sans toucher aux moteurs.
+
+## ESPN (API publique) — ajoutée v1.2
+
+- **Type** : API JSON publiquement accessible, sans clé ni authentification.
+- **Rôle** : source du **moteur de recherche ciblée** (`src/workers/research.js`) :
+  quand un match programmé n'a pas de pronostic faute d'historique (ex. Saudi
+  Pro League), le moteur reconstitue l'historique réel de la compétition via
+  le scoreboard ESPN (fenêtres de 45 jours, ~2 ans), puis régénère les pronostics.
+- **Couverture vérifiée** (chaque slug testé réellement) : ksa.1 (Saudi Pro League),
+  arg.1, bra.1, chn.1, jpn.1, mex.1, usa.1, aus.1, nor.1, swe.1, den.1, rsa.1, idn.1.
+- **Live** : le worker `espnLive` (2 min) suit les matchs en cours de ces ligues.
+- **Politesse (§5)** : ≥1,5 s entre requêtes, User-Agent identifiable, aucun
+  contournement ; fiabilité mesurée comme toute source (`/api/sources`).
+- **Attribution** : « Résultats et scores : ESPN ».
+
+## Moteur de recherche ciblée (Deep Research Engine)
+
+Toutes les 15 minutes (`researchTargeted`) :
+1. détecte les compétitions avec matchs à venir (7 j) mais historique
+   insuffisant (<60 matchs comp. ou <8 matchs/équipe) ;
+2. cherche une source en ligne vérifiée couvrant la compétition ;
+3. ingère l'historique **réel** (SOURCE DATA, provenance conservée) ;
+4. régénère les pronostics.
+Si aucune source gratuite ne couvre la compétition, le match reste honnêtement
+en « données insuffisantes » — jamais de données inventées.

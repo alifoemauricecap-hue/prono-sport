@@ -7,6 +7,8 @@ import { registerSources, checkSourceHealth } from '../providers/registry.js';
 import * as fdcuk from '../providers/footballDataCoUk.js';
 import * as tsdb from '../providers/theSportsDb.js';
 import * as oligadb from '../providers/openLigaDb.js';
+import * as espn from '../providers/espn.js';
+import { runTargetedResearch } from './research.js';
 import { generatePrediction, settlePredictions } from '../engine/predictions.js';
 import { updateLivePredictions } from '../engine/live.js';
 
@@ -216,6 +218,25 @@ export function startScheduler() {
   }, 12 * 60 * 1000, 'discoveryRetry');
   // cycle de découverte complet toutes les 6 h
   schedule(runDiscoveryCycle, 6 * 60 * 60 * 1000, 'discoveryFull');
+  // RECHERCHE CIBLÉE : matchs programmés sans pronostic faute d'historique →
+  // recherche en ligne approfondie (ESPN…) pour reconstituer l'historique réel,
+  // puis régénération des pronostics. Première passe 3 min après le démarrage.
+  const research = () => runTargetedResearch({ regenerate: generateUpcomingPredictions });
+  setTimeout(() => research().catch((e) => console.error('[worker researchTargeted]', e.message)), 3 * 60 * 1000);
+  schedule(research, 15 * 60 * 1000, 'researchTargeted');
+  // SUIVI LIVE MONDIAL via ESPN : rafraîchit les ligues rattachées ayant un
+  // match en cours ou imminent (fenêtre -3 h → +30 min), 2 ligues max par tick.
+  schedule(async () => {
+    const active = espn.mappedCompetitions().filter((m) =>
+      db.prepare(`SELECT 1 FROM fixtures WHERE competition_id=?
+          AND ((status IN ('LIVE','HALFTIME','EXTRA_TIME'))
+            OR (status IN ('SCHEDULED','UPCOMING')
+                AND kickoff_utc BETWEEN datetime('now','-3 hour') AND datetime('now','+30 minute')))
+          LIMIT 1`).get(m.competitionId));
+    for (const m of active.slice(0, 2)) {
+      await runJob('syncEspnLive', 'espn', () => espn.syncEspnRecent(m.slug, m.competitionId, m.country));
+    }
+  }, 2 * 60 * 1000, 'espnLive');
   // RATTRAPAGE AUTONOME : si le chargement initial a été gêné par la source
   // (rate limit hébergeur), on complète progressivement — jamais de données
   // manquantes définitives tant que la source redevient joignable.

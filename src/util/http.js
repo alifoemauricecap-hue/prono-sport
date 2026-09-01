@@ -38,7 +38,7 @@ export async function fetchText(url, { sourceId, ttlMs = 60_000, timeoutMs = 20_
   const cached = memCache.get(url);
   if (cached && Date.now() - cached.at < ttlMs) return { body: cached.body, fromCache: true };
 
-  const headers = { 'User-Agent': 'PronoSport/1.0 (analytics platform; respectful crawler)' };
+  const headers = { 'User-Agent': 'PronoSport/1.0 (analytics platform)' };
   const hc = db.prepare(`SELECT etag, last_modified FROM http_cache WHERE url=?`).get(url);
   if (hc?.etag) headers['If-None-Match'] = hc.etag;
   if (hc?.last_modified) headers['If-Modified-Since'] = hc.last_modified;
