@@ -7,14 +7,19 @@ import { CONFIG } from '../config.js';
 import { ELO_START, updateElo, eloProbabilities } from './elo.js';
 import { fitStrengths, expectedGoals, scoreMatrix, marketsFromMatrix, estimateRho } from './poisson.js';
 
-/** Charge les matchs terminés d'une compétition, ordre chronologique strict */
+/** Charge les matchs terminés d'une compétition, ordre chronologique strict.
+ * MAX_TRAIN_MATCHES (env, optionnel) : sur les petites instances, borne
+ * l'entraînement aux N matchs les plus récents (documenté, jamais silencieux
+ * sur la méthodologie — le backtest reste walk-forward sur cette fenêtre). */
 export function loadFinishedMatches(competitionId) {
-  return db.prepare(`SELECT f.id, f.kickoff_utc AS ts, f.home_team_id AS homeKey,
+  const rows = db.prepare(`SELECT f.id, f.kickoff_utc AS ts, f.home_team_id AS homeKey,
       f.away_team_id AS awayKey, f.home_score AS hg, f.away_score AS ag
       FROM fixtures f
       WHERE f.competition_id=? AND f.status='FINISHED'
         AND f.home_score IS NOT NULL AND f.away_score IS NOT NULL
       ORDER BY f.kickoff_utc ASC`).all(competitionId);
+  const cap = parseInt(process.env.MAX_TRAIN_MATCHES || '0', 10);
+  return cap > 0 && rows.length > cap ? rows.slice(-cap) : rows;
 }
 
 function brier(probs, outcome) {

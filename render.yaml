@@ -22,6 +22,10 @@ services:
         value: production
       - key: HISTORICAL_SEASONS
         value: 2324,2425,2526
+      # Petite instance (0,1 CPU) : borne l'entraînement aux 2500 matchs les
+      # plus récents par compétition (le backtest reste walk-forward)
+      - key: MAX_TRAIN_MATCHES
+        value: "2500"
       # --- option plan payant avec disque persistant ---
       # - key: DB_PATH
       #   value: /app/data/pronosport.db

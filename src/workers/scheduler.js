@@ -113,6 +113,8 @@ export async function generateUpcomingPredictions() {
   let n = 0;
   for (const f of upcoming) {
     try { if (generatePrediction(f.id).status === 'OK') n++; } catch { /* compté dans errors */ }
+    // petites instances : rendre la main entre chaque analyse (healthcheck réactif)
+    await new Promise((r) => setImmediate(r));
   }
   job.finish('COMPLETED', n, null);
   return n;

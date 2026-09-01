@@ -32,6 +32,24 @@ function parseUkDate(d, t) {
   return `${year}-${mm.padStart(2, '0')}-${dd.padStart(2, '0')}T${time}:00Z`;
 }
 
+/**
+ * Ingestion PAR LOTS : sur les petites instances (0,1 CPU), une transaction
+ * unique de plusieurs milliers de lignes bloque l'event loop et fait échouer
+ * le healthcheck (redémarrage forcé). On découpe en lots de 250 lignes et on
+ * rend la main entre chaque lot.
+ */
+async function ingestChunked(rows, fn, chunkSize = 250) {
+  let count = 0;
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    const slice = rows.slice(i, i + chunkSize);
+    db.transaction(() => {
+      for (const row of slice) if (fn(row) != null) count++;
+    })();
+    await new Promise((r) => setImmediate(r)); // healthcheck reste réactif
+  }
+  return count;
+}
+
 function num(v) { const n = parseFloat(v); return Number.isFinite(n) ? n : null; }
 function int(v) { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; }
 
@@ -108,11 +126,7 @@ export async function syncHistoricalSeason(seasonCode, divCode) {
   const url = `${BASE}/mmz4281/${seasonCode}/${divCode}.csv`;
   const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: CONFIG.freshness.historical * 1000 });
   const rows = parseCsv(body);
-  let count = 0;
-  const tx = db.transaction(() => {
-    for (const row of rows) if (ingestRow(row, { isFixture: false }) != null) count++;
-  });
-  tx();
+  const count = await ingestChunked(rows, (row) => ingestRow(row, { isFixture: false }));
   // profondeur historique réelle (§18)
   const comp = db.prepare(`SELECT id FROM competitions WHERE code=?`).get(divCode);
   if (comp) {
@@ -128,11 +142,7 @@ export async function syncUpcomingFixtures() {
   const url = `${BASE}/fixtures.csv`;
   const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: 10 * 60_000 });
   const rows = parseCsv(body);
-  let count = 0;
-  const tx = db.transaction(() => {
-    for (const row of rows) if (ingestRow(row, { isFixture: true }) != null) count++;
-  });
-  tx();
+  const count = await ingestChunked(rows, (row) => ingestRow(row, { isFixture: true }));
   return count;
 }
 
@@ -218,11 +228,7 @@ export async function syncExtraLeague(code) {
   const url = `${BASE}/new/${meta.file}.csv`;
   const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: CONFIG.freshness.historical * 1000 });
   const rows = parseCsv(body);
-  let count = 0;
-  const tx = db.transaction(() => {
-    for (const row of rows) if (ingestWorldRow(row, code, meta, { isFixture: false }) != null) count++;
-  });
-  tx();
+  const count = await ingestChunked(rows, (row) => ingestWorldRow(row, code, meta, { isFixture: false }));
   const comp = db.prepare(`SELECT id FROM competitions WHERE code=?`).get(code);
   if (comp) {
     const range = db.prepare(`SELECT MIN(kickoff_utc) AS mn, MAX(kickoff_utc) AS mx FROM fixtures WHERE competition_id=? AND status='FINISHED'`).get(comp.id);
@@ -248,15 +254,11 @@ export async function syncWorldFixtures() {
   const url = `${BASE}/new_league_fixtures.csv`;
   const { body } = await fetchText(url, { sourceId: SOURCE_ID, ttlMs: 10 * 60_000 });
   const rows = parseCsv(body);
-  let count = 0;
-  const tx = db.transaction(() => {
-    for (const row of rows) {
-      const code = COUNTRY_TO_CODE.get((row.Country || '').toLowerCase());
-      const meta = code ? CONFIG.extraLeagues[code] : null;
-      if (!meta) continue; // pays hors périmètre : ignoré, jamais deviné
-      if (ingestWorldRow(row, code, meta, { isFixture: true }) != null) count++;
-    }
+  const count = await ingestChunked(rows, (row) => {
+    const code = COUNTRY_TO_CODE.get((row.Country || '').toLowerCase());
+    const meta = code ? CONFIG.extraLeagues[code] : null;
+    if (!meta) return null; // pays hors périmètre : ignoré, jamais deviné
+    return ingestWorldRow(row, code, meta, { isFixture: true });
   });
-  tx();
   return count;
 }

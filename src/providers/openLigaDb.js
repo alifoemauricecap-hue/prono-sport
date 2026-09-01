@@ -86,16 +86,20 @@ export async function syncCurrentMatchday(shortcut) {
   return { n, liveCount };
 }
 
-/** Saison complète (historique + calendrier restant) */
+/** Saison complète (historique + calendrier restant) — ingestion par lots */
 export async function syncSeason(shortcut, seasonYear) {
   const { data } = await fetchJson(`${BASE}/getmatchdata/${shortcut}/${seasonYear}`,
     { sourceId: SOURCE_ID, ttlMs: 3600_000 });
   const divCode = LEAGUES[shortcut];
   let n = 0;
-  const tx = db.transaction(() => {
-    for (const m of data || []) if (ingest(m, divCode)) n++;
-  });
-  tx();
+  const matches = data || [];
+  for (let i = 0; i < matches.length; i += 100) {
+    const slice = matches.slice(i, i + 100);
+    db.transaction(() => {
+      for (const m of slice) if (ingest(m, divCode)) n++;
+    })();
+    await new Promise((r) => setImmediate(r)); // healthcheck réactif sur petites instances
+  }
   return n;
 }
 
