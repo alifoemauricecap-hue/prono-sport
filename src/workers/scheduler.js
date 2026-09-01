@@ -1,0 +1,221 @@
+// PRONO SPORT — Workers de synchronisation (§14) + LIVE ENGINE (§15) + FAILOVER (§64)
+// Chaque worker est idempotent (upserts), réessayable, journalisé (sync_jobs) et monitoré.
+// Ordre de priorité §10 : LIVE > imminents > à venir > cotes > historique > découverte.
+import { db, now, logJob, notify } from '../db.js';
+import { CONFIG } from '../config.js';
+import { registerSources, checkSourceHealth } from '../providers/registry.js';
+import * as fdcuk from '../providers/footballDataCoUk.js';
+import * as tsdb from '../providers/theSportsDb.js';
+import * as oligadb from '../providers/openLigaDb.js';
+import { generatePrediction, settlePredictions } from '../engine/predictions.js';
+import { updateLivePredictions } from '../engine/live.js';
+
+export const liveEvents = { listeners: new Set() };
+export function broadcast(type, payload) {
+  const msg = `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`;
+  for (const res of liveEvents.listeners) { try { res.write(msg); } catch { /* client parti */ } }
+}
+
+async function runJob(name, sourceId, fn) {
+  const job = logJob(name, sourceId);
+  try {
+    const items = await fn();
+    job.finish('COMPLETED', typeof items === 'number' ? items : (items?.total ?? 0),
+      items?.errors?.length ? items.errors.join('; ') : null);
+    return items;
+  } catch (e) {
+    job.finish('FAILED', 0, e.message);
+    return null;
+  }
+}
+
+/** P1 — LIVE ENGINE : détection et synchro des matchs en direct */
+export async function syncLiveMatches() {
+  let totalLive = 0;
+  for (const shortcut of Object.keys(oligadb.OPENLIGA_LEAGUES)) {
+    const r = await runJob('syncLiveMatches', 'openligadb', () => oligadb.syncCurrentMatchday(shortcut));
+    if (r?.liveCount) totalLive += r.liveCount;
+  }
+  // transitions de statut basées sur l'horloge pour matchs sans source live :
+  // SCHEDULED → UPCOMING (< 2h) ; jamais marqués LIVE sans confirmation (§12)
+  db.prepare(`UPDATE fixtures SET status='UPCOMING'
+      WHERE status='SCHEDULED' AND kickoff_utc BETWEEN datetime('now') AND datetime('now', '+2 hours')`).run();
+  // coup d'envoi passé sans confirmation de source live → UNKNOWN, pas LIVE
+  db.prepare(`UPDATE fixtures SET status='UNKNOWN'
+      WHERE status IN ('SCHEDULED','UPCOMING') AND kickoff_utc < datetime('now', '-10 minutes')
+      AND home_score IS NULL`).run();
+  // LIVE PREDICTION ENGINE (§53) : recalcul minute par minute des matchs confirmés live
+  const liveSnaps = updateLivePredictions();
+  if (liveSnaps) broadcast('live_prediction', { snapshots: liveSnaps, at: now() });
+  if (totalLive) broadcast('live_update', { liveCount: totalLive, at: now() });
+  return totalLive;
+}
+
+/** P2/P3 — matchs à venir + cotes réelles, avec failover multi-sources (§64) */
+export async function syncFixtures() {
+  let ok = false;
+  const r1 = await runJob('syncFixtures', 'football-data-couk', () => fdcuk.syncUpcomingFixtures());
+  if (r1 != null) ok = true;
+  // validation croisée / enrichissement logos & stades — source secondaire
+  for (const divCode of Object.keys(CONFIG.divisions)) {
+    await runJob('syncFixtures.tsdb', 'thesportsdb', () => tsdb.syncLeagueUpcoming(divCode));
+  }
+  if (!ok) notify('SOURCE_DOWN', { source: 'football-data-couk', fallback: 'thesportsdb', at: now() });
+  return ok;
+}
+
+/** Résultats récents + settlement des pronostics (§17) */
+export async function syncResults() {
+  await runJob('syncResults', 'football-data-couk', () => fdcuk.syncRecentResults());
+  for (const divCode of Object.keys(CONFIG.divisions)) {
+    await runJob('syncResults.tsdb', 'thesportsdb', () => tsdb.syncLeaguePast(divCode));
+  }
+  const settled = settlePredictions();
+  if (settled) broadcast('predictions_settled', { settled, at: now() });
+  return settled;
+}
+
+/** P7 — Historique complet (HistoricalDataProvider) */
+export async function syncHistoricalData() {
+  let total = 0;
+  const errors = [];
+  for (const season of CONFIG.historicalSeasons) {
+    for (const divCode of Object.keys(CONFIG.divisions)) {
+      try {
+        total += await fdcuk.syncHistoricalSeason(season.trim(), divCode);
+      } catch (e) { errors.push(`${season}/${divCode}: ${e.message}`); }
+    }
+  }
+  const job = logJob('syncHistoricalData', 'football-data-couk');
+  job.finish(errors.length ? 'PARTIAL' : 'COMPLETED', total, errors.slice(0, 5).join('; '));
+  return { total, errors };
+}
+
+/** Historique Bundesliga OpenLigaDB (validation croisée D1/D2) */
+export async function syncOpenLigaHistory() {
+  const years = [2023, 2024, 2025];
+  let total = 0;
+  for (const shortcut of Object.keys(oligadb.OPENLIGA_LEAGUES)) {
+    for (const y of years) {
+      const n = await runJob('syncHistoricalData.openligadb', 'openligadb', () => oligadb.syncSeason(shortcut, y));
+      if (n) total += n;
+    }
+  }
+  return total;
+}
+
+/** Génère les pronostics pour tous les matchs à venir analysables */
+export async function generateUpcomingPredictions() {
+  const upcoming = db.prepare(`SELECT id FROM fixtures
+      WHERE status IN ('SCHEDULED','UPCOMING') AND kickoff_utc > datetime('now')
+      AND kickoff_utc < datetime('now', '+10 days') ORDER BY kickoff_utc ASC LIMIT 300`).all();
+  const job = logJob('generatePredictions', null);
+  let n = 0;
+  for (const f of upcoming) {
+    try { if (generatePrediction(f.id).status === 'OK') n++; } catch { /* compté dans errors */ }
+  }
+  job.finish('COMPLETED', n, null);
+  return n;
+}
+
+/** Ligues mondiales : historique /new/ + fixtures cotées (football-data.co.uk) */
+export async function syncWorldData() {
+  const missing = Object.keys(CONFIG.extraLeagues || {}).filter((code) =>
+    !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+  let total = 0;
+  if (missing.length) {
+    const r = await runJob('syncExtraLeagues', 'football-data-couk', () => fdcuk.syncExtraLeagues());
+    total = r?.total || 0;
+  } else {
+    // rafraîchissement : seules les ligues avec matchs récents à re-lire
+    for (const code of Object.keys(CONFIG.extraLeagues || {})) {
+      const n = await runJob(`syncExtraLeague.${code}`, 'football-data-couk', () => fdcuk.syncExtraLeague(code));
+      if (n) total += n;
+    }
+  }
+  const fx = await runJob('syncWorldFixtures', 'football-data-couk', () => fdcuk.syncWorldFixtures());
+  return { total, fixtures: fx || 0 };
+}
+
+/** Découverte autonome + synchro des ligues découvertes */
+export async function runDiscoveryCycle() {
+  const d = await runJob('discoverWorldLeagues', 'thesportsdb', () => tsdb.discoverWorldLeagues());
+  const s = await runJob('syncDiscoveredLeagues', 'thesportsdb', () => tsdb.syncDiscoveredLeagues());
+  return { discovery: d, sync: s };
+}
+
+/** Checkpoint WAL : fusionne le journal dans le fichier principal (durabilité). */
+export function checkpointWal() {
+  try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* base occupée : au prochain cycle */ }
+}
+
+/** Bootstrap complet au premier démarrage (base vide) */
+export async function bootstrap() {
+  registerSources();
+  const fixturesCount = db.prepare(`SELECT COUNT(*) AS n FROM fixtures`).get().n;
+  console.log(`[PRONO SPORT] Base : ${fixturesCount} matchs.`);
+  await checkSourceHealth();
+  if (fixturesCount < 500) {
+    console.log('[PRONO SPORT] Chargement initial de l\'historique réel (football-data.co.uk)…');
+    const h = await syncHistoricalData();
+    console.log(`[PRONO SPORT] Historique : ${h.total} matchs ingérés (${h.errors.length} erreurs source).`);
+    await syncOpenLigaHistory();
+  }
+  // Couverture mondiale : ingérée si absente (ligues /new/ + fixtures cotées)
+  const worldMissing = Object.keys(CONFIG.extraLeagues || {}).some((code) =>
+    !db.prepare(`SELECT 1 FROM competitions WHERE code=?`).get(code));
+  if (worldMissing) {
+    console.log('[PRONO SPORT] Chargement des ligues mondiales (football-data.co.uk /new/)…');
+    const w = await syncWorldData();
+    console.log(`[PRONO SPORT] Monde : ${w.total} matchs + ${w.fixtures} fixtures cotées.`);
+  } else {
+    await runJob('syncWorldFixtures', 'football-data-couk', () => fdcuk.syncWorldFixtures());
+  }
+  await syncFixtures();
+  await syncResults();
+  await syncLiveMatches();
+  checkpointWal();
+  const preds = await generateUpcomingPredictions();
+  console.log(`[PRONO SPORT] ${preds} analyses générées pour les matchs à venir.`);
+  checkpointWal();
+  // Découverte autonome DIFFÉRÉE (75 s après le boot : priorité aux données
+  // critiques, respect du rate limit de la source de découverte)
+  const t = setTimeout(async () => {
+    try {
+      const r = await runDiscoveryCycle();
+      console.log(`[PRONO SPORT] Découverte : ${r.discovery?.tested ?? 0} testées, ${r.discovery?.approved ?? 0} approuvées, ${r.discovery?.rejected ?? 0} rejetées ; ${r.sync?.events ?? 0} événements synchronisés.`);
+      await generateUpcomingPredictions();
+      checkpointWal();
+    } catch (e) { console.error('[PRONO SPORT] découverte :', e.message); }
+  }, 75_000);
+  t.unref?.();
+}
+
+let timers = [];
+export function startScheduler() {
+  const schedule = (fn, ms, name) => {
+    const t = setInterval(() => fn().catch((e) => console.error(`[worker ${name}]`, e.message)), ms);
+    t.unref?.();
+    timers.push(t);
+  };
+  schedule(syncLiveMatches, CONFIG.syncIntervals.live, 'live');
+  schedule(syncFixtures, CONFIG.syncIntervals.upcoming, 'fixtures');
+  schedule(syncResults, CONFIG.syncIntervals.results, 'results');
+  schedule(async () => { await syncHistoricalData(); await syncOpenLigaHistory(); }, CONFIG.syncIntervals.historical, 'historical');
+  schedule(async () => checkSourceHealth(), CONFIG.syncIntervals.discovery, 'discovery');
+  schedule(generateUpcomingPredictions, 30 * 60 * 1000, 'predictions');
+  // monde : fixtures cotées + ligues dynamiques découvertes
+  schedule(async () => { await runJob('syncWorldFixtures', 'football-data-couk', () => fdcuk.syncWorldFixtures()); }, 20 * 60 * 1000, 'worldFixtures');
+  schedule(async () => { await runJob('syncDiscoveredLeagues', 'thesportsdb', () => tsdb.syncDiscoveredLeagues()); }, 20 * 60 * 1000, 'dynamicLeagues');
+  // retest des candidats PENDING (rate-limités) toutes les 12 min
+  schedule(async () => {
+    const pending = db.prepare(`SELECT COUNT(*) AS n FROM discovered_leagues WHERE status='PENDING'`).get().n;
+    if (pending > 0) await runJob('discoveryRetry', 'thesportsdb', () => tsdb.processDiscoveryBatch());
+  }, 12 * 60 * 1000, 'discoveryRetry');
+  // cycle de découverte complet toutes les 6 h
+  schedule(runDiscoveryCycle, 6 * 60 * 60 * 1000, 'discoveryFull');
+  // durabilité : checkpoint WAL toutes les 5 min
+  schedule(async () => checkpointWal(), 5 * 60 * 1000, 'walCheckpoint');
+  console.log('[PRONO SPORT] Scheduler démarré (live 60s, fixtures 10min, résultats 15min, monde 20min, découverte 6h).');
+}
+export function stopScheduler() { timers.forEach(clearInterval); timers = []; }

@@ -1,0 +1,24 @@
+name: CI
+# Pipeline §92 : lint/typecheck → tests → sécurité → build
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - run: npm ci
+      - name: Typecheck (syntaxe)
+        run: |
+          for f in $(find src -name '*.js'); do node --check "$f"; done
+          node --check public/app.js
+      - name: Tests (NO FAKE DATA, DATA CONFLICT, moteurs, providers)
+        run: npm test
+      - name: Audit sécurité
+        run: npm audit --omit=dev --audit-level=high
+      - name: Build image
+        run: docker build -t prono-sport:ci .

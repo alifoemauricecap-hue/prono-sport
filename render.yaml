@@ -1,0 +1,31 @@
+# ============================================================
+# Render Blueprint — PRONO SPORT (plan FREE, 0 $)
+# ============================================================
+# Le plan free n'a pas de disque persistant : la base SQLite est
+# reconstruite AUTOMATIQUEMENT au démarrage par le bootstrap autonome
+# (~80 000 matchs réels + ~1,1 M de cotes depuis les sources publiques,
+# 2-3 minutes). Aucune donnée n'est perdue définitivement : tout vient
+# des sources.
+#
+# Pour une base persistante (démarrages instantanés), passer en plan
+# payant et décommenter le bloc "disk" + la variable DB_PATH ci-dessous.
+services:
+  - type: web
+    name: prono-sport
+    runtime: node
+    plan: free
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: HISTORICAL_SEASONS
+        value: 2324,2425,2526
+      # --- option plan payant avec disque persistant ---
+      # - key: DB_PATH
+      #   value: /app/data/pronosport.db
+    # disk:
+    #   name: prono-data
+    #   mountPath: /app/data
+    #   sizeGB: 1

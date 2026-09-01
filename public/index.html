@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PRONO SPORT — Intelligence Football</title>
+<meta name="description" content="Plateforme professionnelle mondiale d'intelligence football : données réelles, modèles statistiques, value bets.">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand" onclick="nav('home')">
+    <span class="brand-mark">⚽</span>
+    <span class="brand-name">PRONO<b>SPORT</b></span>
+  </div>
+  <div class="searchbox">
+    <input id="searchInput" type="search" placeholder="Rechercher équipe, compétition, match…" autocomplete="off">
+    <div id="searchResults" class="search-results hidden"></div>
+  </div>
+  <div class="live-indicator" id="liveIndicator" title="Connexion temps réel">
+    <span class="dot"></span><span id="liveCount">SSE</span>
+  </div>
+</header>
+
+<nav class="mainnav" id="mainnav">
+  <button data-view="home" class="active">Accueil</button>
+  <button data-view="live">Live</button>
+  <button data-view="upcoming">À venir</button>
+  <button data-view="finished">Terminés</button>
+  <button data-view="competitions">Compétitions</button>
+  <button data-view="value">Value Bets</button>
+  <button data-view="predictions">Pronostics</button>
+  <button data-view="favorites">Favoris</button>
+  <button data-view="coverage">Couverture</button>
+  <button data-view="sources">Sources</button>
+  <button data-view="backtest">Backtest Lab</button>
+  <button data-view="admin">Admin</button>
+</nav>
+
+<main id="app"><div class="loading">Chargement de PRONO SPORT…</div></main>
+
+<footer class="footer">
+  <div>PRONO SPORT — <em>Les données d'abord. Les modèles ensuite. La décision en dernier.</em></div>
+  <div class="attribution">Données : Football-Data.co.uk · TheSportsDB.com · OpenLigaDB · Météo : Open-Meteo.com</div>
+  <div class="disclaimer">Plateforme d'analyse statistique. Aucune donnée inventée : chaque information est taguée SOURCE DATA, CALCULATED DATA ou MODEL ESTIMATE. Jouer comporte des risques.</div>
+</footer>
+
+<div id="assistant" class="assistant hidden">
+  <div class="assistant-head">Assistant PRONO SPORT AI <button onclick="toggleAssistant()">✕</button></div>
+  <div id="assistantLog" class="assistant-log">
+    <div class="msg bot">Je réponds uniquement à partir des données réelles collectées. Ouvrez un match puis posez votre question : « Pourquoi ce marché ? », « Quels risques ? », « Pourquoi aucun value bet ? »…</div>
+  </div>
+  <form id="assistantForm" class="assistant-input">
+    <input id="assistantQ" placeholder="Votre question…" autocomplete="off">
+    <button type="submit">→</button>
+  </form>
+</div>
+<button class="assistant-fab" onclick="toggleAssistant()" title="Assistant IA">🤖</button>
+
+<script src="/app.js"></script>
+</body>
+</html>
