@@ -98,7 +98,7 @@ export async function syncSeason(shortcut, seasonYear) {
     db.transaction(() => {
       for (const m of slice) if (ingest(m, divCode)) n++;
     })();
-    await new Promise((r) => setImmediate(r)); // healthcheck réactif sur petites instances
+    await new Promise((r) => setTimeout(r, 25)); // vraie pause : healthcheck <1 s sur petites instances
   }
   return n;
 }

@@ -112,7 +112,8 @@ export async function syncLeagueYears(code, years, ttlMs = 6 * 3600_000) {
     let i = 0;
     for (const ev of events) {
       if (ingestEspnEvent(ev, code, meta) != null) n++;
-      if (++i % 200 === 0) await new Promise((r) => setImmediate(r)); // ne jamais bloquer l'event loop
+      // pause réelle régulière : le healthcheck doit répondre <1 s même à 0,1 CPU
+      if (++i % 40 === 0) await sleep(20);
     }
   }
   return n;

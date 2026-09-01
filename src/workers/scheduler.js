@@ -115,8 +115,8 @@ export async function generateUpcomingPredictions() {
   let n = 0;
   for (const f of upcoming) {
     try { if (generatePrediction(f.id).status === 'OK') n++; } catch { /* compté dans errors */ }
-    // petites instances : rendre la main entre chaque analyse (healthcheck réactif)
-    await new Promise((r) => setImmediate(r));
+    // petites instances : VRAIE pause entre analyses (healthcheck <1 s garanti)
+    await new Promise((r) => setTimeout(r, 15));
   }
   job.finish('COMPLETED', n, null);
   return n;
@@ -148,13 +148,27 @@ export async function runDiscoveryCycle() {
   return { discovery: d, sync: s };
 }
 
-/** Checkpoint WAL : fusionne le journal dans le fichier principal (durabilité). */
+/** Checkpoint WAL : fusionne le journal dans le fichier principal (durabilité).
+ *  PASSIVE (incrémental, non bloquant pour les écrivains) et JAMAIS pendant une
+ *  ingestion massive : un TRUNCATE synchrone à 0,1 CPU gelait l'event loop
+ *  plusieurs secondes → healthcheck en échec → redémarrage (mesuré en prod). */
+let ingestionBusy = 0;
 export function checkpointWal() {
-  try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch { /* base occupée : au prochain cycle */ }
+  if (ingestionBusy > 0) return; // l'autocheckpoint SQLite (incrémental) suffit pendant l'ingestion
+  try { db.pragma('wal_checkpoint(PASSIVE)'); } catch { /* base occupée : au prochain cycle */ }
 }
 
 /** Bootstrap complet au premier démarrage (base vide) */
 export async function bootstrap() {
+  ingestionBusy++;
+  try {
+    return await bootstrapInner();
+  } finally {
+    ingestionBusy--;
+  }
+}
+
+async function bootstrapInner() {
   registerSources();
   const fixturesCount = db.prepare(`SELECT COUNT(*) AS n FROM fixtures`).get().n;
   console.log(`[PRONO SPORT] Base : ${fixturesCount} matchs.`);

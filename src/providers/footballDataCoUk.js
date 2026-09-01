@@ -63,14 +63,18 @@ function parseUkDate(d, t) {
  * le healthcheck (redémarrage forcé). On découpe en lots de 250 lignes et on
  * rend la main entre chaque lot.
  */
-async function ingestChunked(rows, fn, chunkSize = 250) {
+// Petites instances (0,1 CPU) : chunks courts + VRAIE pause entre chunks pour
+// que le healthcheck de la plateforme réponde en <1 s même pendant l'ingestion.
+// Diagnostic mesuré en production : chunks de 250 → /api/health à 4-11 s →
+// instance marquée unhealthy et redémarrée après ~5 min. NE PAS regrossir.
+async function ingestChunked(rows, fn, chunkSize = 50) {
   let count = 0;
   for (let i = 0; i < rows.length; i += chunkSize) {
     const slice = rows.slice(i, i + chunkSize);
     db.transaction(() => {
       for (const row of slice) if (fn(row) != null) count++;
     })();
-    await new Promise((r) => setImmediate(r)); // healthcheck reste réactif
+    await new Promise((r) => setTimeout(r, 25)); // draine les requêtes en attente
   }
   return count;
 }

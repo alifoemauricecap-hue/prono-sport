@@ -110,7 +110,7 @@ export async function runDeepResearch() {
       const r = generatePrediction(g.id);
       if (r?.status === 'OK') regenerated++;
     } catch { /* état honnête conservé */ }
-    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setTimeout(r, 15)); // vraie pause : healthcheck réactif
   }
 
   job.finish(errors.length ? 'PARTIAL' : 'COMPLETED', ingested,
