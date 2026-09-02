@@ -8,7 +8,39 @@ import path from 'node:path';
 import { CONFIG } from './config.js';
 
 fs.mkdirSync(path.dirname(CONFIG.dbPath), { recursive: true });
-export const db = new Database(CONFIG.dbPath);
+
+/** AUTO-RÉPARATION (§64) : ouvre la base et vérifie son intégrité.
+ *  Si le fichier est corrompu (ex. arrêt brutal en pleine écriture), il est
+ *  écarté (.corrupt-<horodatage>) et une base saine est recréée : toutes les
+ *  données sont reconstruites automatiquement depuis les sources réelles par
+ *  le bootstrap — aucune donnée n'est perdue définitivement, aucune erreur
+ *  ne persiste. */
+function openWithSelfHealing(dbPath) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let d = null;
+    try {
+      d = new Database(dbPath);
+      if (dbPath !== ':memory:') {
+        const check = d.pragma('quick_check', { simple: true });
+        if (check !== 'ok') throw new Error(`quick_check: ${check}`);
+      }
+      return d;
+    } catch (e) {
+      try { d?.close(); } catch { /* déjà fermée */ }
+      if (dbPath === ':memory:' || attempt === 1) throw e;
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      console.error(`[PRONO SPORT] Base corrompue détectée (${e.message}) — mise à l'écart et reconstruction automatique depuis les sources.`);
+      for (const suffix of ['', '-wal', '-shm']) {
+        try {
+          if (fs.existsSync(dbPath + suffix)) fs.renameSync(dbPath + suffix, `${dbPath}.corrupt-${stamp}${suffix}`);
+        } catch { try { fs.rmSync(dbPath + suffix, { force: true }); } catch { /* au pire : recréée par-dessus */ } }
+      }
+    }
+  }
+  throw new Error('ouverture base impossible');
+}
+
+export const db = openWithSelfHealing(CONFIG.dbPath);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 
