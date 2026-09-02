@@ -140,3 +140,21 @@ couverture, elle n'invente rien.
   comme VALUE BET. Les sections Expert/Combiné affichent la provenance.
 - **Dédoublonnage inter-sources** des sélections du jour : même match réel
   détecté par équipes (préfixes complets ≥ 5 lettres) + coups d'envoi à ≤ 3 h.
+
+## v3.4 — Pronos d'Or, Transparence, PWA, Handicaps, Bankroll
+- **💎 Pronos d'Or** (`/api/golden-picks`) : picks les plus sûrs des 48 h tous
+  marchés, étoiles (probabilité calibrée), fiabilité = % de réussite RÉEL du
+  marché (CALCULATED DATA, affichée dès 10 pronostics réglés, sinon null).
+- **📊 Transparence** (`/api/transparency`) : performance publique — réussite
+  et ROI simulé (mise fixe 1 u.) par marché/compétition/décision + calibration
+  annoncé-vs-réel + série 14 jours. Résultats réels réglés uniquement.
+- **Handicaps asiatiques demi-lignes** (AH±0,5 / AH±1,5) : cotes spread du
+  pickcenter ESPN (SOURCE DATA), probabilités exactes depuis la matrice de
+  scores Dixon-Coles, règlement automatique dans evaluateSelection.
+- **⚔️ Face-à-face** (`/api/fixtures/:id/h2h`) : confrontations réelles en base.
+- **PWA** : manifest + service worker (shell en cache, API réseau uniquement —
+  jamais de données périmées présentées comme fraîches), installable mobile.
+- **🔔 Notifications navigateur** (SSE → Notification API) : sélections du
+  jour, comptes rendus post-match, paris virtuels gagnés.
+- **💰 Bankroll virtuelle** (localStorage, 1000 u. fictives) : suivi de mises
+  virtuelles réglées sur les résultats réels — pédagogique, aucun argent réel.

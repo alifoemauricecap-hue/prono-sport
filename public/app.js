@@ -66,6 +66,7 @@ window.nav = (view, arg) => {
   const views = {
     home: renderHome, live: renderLive, upcoming: renderUpcoming, finished: renderFinished,
     expert: renderExpert, combo: renderCombo, tracking: renderTracking,
+    golden: renderGolden, transparency: renderTransparency, bankroll: renderBankroll,
     competitions: renderCompetitions, value: renderValue, predictions: renderPredictions,
     favorites: renderFavorites, coverage: renderCoverage, sources: renderSources,
     backtest: renderBacktest, admin: renderAdmin,
@@ -467,10 +468,16 @@ async function loadTab(tab, m) {
   body.innerHTML = '<div class="loading">Chargement…</div>';
   try {
     if (tab === 'apercu') {
-      let mc = null;
+      let mc = null, h2h = [];
       try { mc = (await api(`/fixtures/${m.id}/matchcenter`)).data; } catch { /* sections absentes */ }
+      try { h2h = (await api(`/fixtures/${m.id}/h2h`)).data || []; } catch { /* absent */ }
       body.innerHTML = `
         ${renderMatchCenter(mc, m)}
+        ${h2h.length ? `<div class="card"><b>⚔️ Face-à-face — ${h2h.length} dernière(s) confrontation(s) ${tagPill('SOURCE DATA')}</b>
+          <div style="margin-top:10px">${h2h.map((g) => `<div class="match-row" onclick="event.stopPropagation();openFixture(${g.id})" style="cursor:pointer">
+            <div class="team"><span>${esc(g.home_name)} <b>${g.home_score}-${g.away_score}</b> ${esc(g.away_name)}</span></div>
+            <div class="match-meta"><span>${esc(g.comp_name)}</span><span>${fmtDate(g.kickoff_utc)}</span></div>
+          </div>`).join('')}</div></div>` : ''}
         ${m.events?.length ? `<div class="card"><b>Timeline (SOURCE DATA — ${esc(m.events[0].source_id)})</b>
           <div class="timeline" style="margin-top:10px">${m.events.map((e) => `<div class="ev"><b>${e.minute != null ? e.minute + "'" : ''}</b> ${e.type === 'GOAL' ? '⚽' : e.type === 'PENALTY_GOAL' ? '⚽ (pen.)' : e.type === 'OWN_GOAL' ? '⚽ (csc)' : '•'} ${esc(e.player_name || '')} <small style="color:var(--muted)">(${e.team_side === 'home' ? esc(m.home_name) : esc(m.away_name)}, ${esc(e.detail || '')})</small></div>`).join('')}</div></div>` : ''}
         <div class="card"><b>Fiche du match</b><div class="kv" style="margin-top:8px">
@@ -848,6 +855,19 @@ try {
     if (currentView === 'live' || currentView === 'home') nav(currentView);
   });
   es.addEventListener('predictions_settled', () => { if (currentView === 'predictions') nav('predictions'); });
+  es.addEventListener('selections', () => {
+    notifyUser('🥇 Sélections du jour mises à jour', 'Expert du jour et Combiné Safe viennent d\u2019être recalculés.');
+    if (currentView === 'expert' || currentView === 'combo') nav(currentView);
+  });
+  es.addEventListener('reviews', (e) => {
+    const d = JSON.parse(e.data);
+    notifyUser('📋 Comptes rendus disponibles', `${d.created} pronostic(s) analysé(s) après match : pourquoi validé ou non.`);
+  });
+  es.addEventListener('newday', (e) => {
+    const d = JSON.parse(e.data);
+    notifyUser('📅 Nouveau jour de matchs', `Les matchs du ${d.day} sont analysés.`);
+    if (currentView === 'home') nav('home');
+  });
   es.addEventListener('live_prediction', () => {
     // recalcul live publié : rafraîchir le Match Center si l'onglet Live est ouvert
     const liveTab = document.querySelector('#mcTabs button[data-tab="live"].active');
@@ -874,6 +894,7 @@ function legRow(l) {
       <span class="pick-pill">🎯 ${esc(l.market)}/${esc(l.selection)}</span>
       ${l.odds ? `<span>cote ${l.odds}${l.decision === 'ANALYSIS PICK' ? ' <small style="color:var(--muted)">(estimée modèle)</small>' : ''}</span>` : ''}
       ${l.relaxed ? '<span class="pill" title="Aucun candidat n\u2019atteint le seuil expert de 62 % aujourd\u2019hui">meilleure dispo du jour</span>' : ''}
+      ${l.result === 'PENDING' && l.odds ? `<button class="fav-btn" onclick="event.stopPropagation();placeBet(${l.prediction_id},${l.fixture_id},${l.odds},'${esc(l.market)}/${esc(l.selection)}','${esc(l.home_name + ' vs ' + l.away_name).replace(/'/g, "\\'")}')">💰</button>` : ''}
       <span>${esc(l.comp_name)}</span>
       ${res}
     </div></div>`;
@@ -963,3 +984,166 @@ async function renderTracking() {
         <span>${esc(r.comp_name)}</span><span>${fmtDate(r.kickoff_utc)}</span>
       </div></div>`).join('') : '<div class="info">Aucun compte rendu encore — générés automatiquement après chaque match pronostiqué.</div>'}`;
 }
+
+/* ---------------- 💎 PRONOS D'OR (v3.4) ---------------- */
+
+const starsHtml = (n) => '<span class="stars">' + '★'.repeat(n) + '☆'.repeat(5 - n) + '</span>';
+
+async function renderGolden() {
+  const r = await api('/golden-picks');
+  const picks = r.data || [];
+  app.innerHTML = `<h2 class="section">💎 PRONOS D'OR <span class="count">les paris les plus sûrs des 48 h</span></h2>
+    <div class="info" style="margin-bottom:12px">Classés par probabilité calibrée du modèle (MODEL ESTIMATE). La fiabilité = taux de réussite <b>réel</b> du marché sur les pronostics déjà réglés (CALCULATED DATA).</div>
+    ${!picks.length ? `<div class="info">${esc(r.note)}</div>`
+    : picks.map((p) => `<div class="card gold-card" onclick="openFixture(${p.fixture_id})" style="cursor:pointer">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div>
+          <div style="font-weight:700">${badge(p.home_badge, p.home_name)} ${esc(p.home_name)} vs ${esc(p.away_name)} ${badge(p.away_badge, p.away_name)}</div>
+          <div style="color:var(--muted);font-size:12px;margin-top:2px">${esc(p.comp_name)} · ${fmtDate(p.kickoff_utc)}</div>
+        </div>
+        <div style="text-align:right">
+          <div style="font-size:20px;font-weight:800">${(p.probability * 100).toFixed(1)}%</div>
+          ${starsHtml(p.stars)}
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;flex-wrap:wrap;gap:8px">
+        <span class="pick-pill">🎯 ${esc(p.label)}</span>
+        <span>
+          ${p.odds ? `cote ${p.odds}${p.decision === 'ANALYSIS PICK' ? ' <small style="color:var(--muted)">(estimée)</small>' : ''}` : ''}
+          ${p.reliability != null ? ` · fiabilité marché <b>${(p.reliability * 100).toFixed(0)}%</b>` : ' · fiabilité : historique en construction'}
+          <button class="fav-btn" onclick="event.stopPropagation();placeBet(${p.prediction_id},${p.fixture_id},${p.odds || 'null'},'${esc(p.label).replace(/'/g, "\\'")}','${esc(p.home_name + ' vs ' + p.away_name).replace(/'/g, "\\'")}')">💰 Miser (virtuel)</button>
+        </span>
+      </div></div>`).join('')}`;
+}
+
+/* ---------------- 📊 TRANSPARENCE (v3.4) ---------------- */
+
+const MARKET_FR = { '1X2': '1N2', 'OU2.5': '+/-2,5 buts', BTTS: 'Les 2 marquent', DC: 'Double chance' };
+const mktFr = (m) => MARKET_FR[m] || (m.startsWith('AH') ? 'Handicap ' + m.slice(2).replace('.', ',') : m);
+const roiClass = (v) => v == null ? '' : v >= 0 ? 'style="color:var(--ok,#2ecc71);font-weight:700"' : 'style="color:var(--loss,#e74c3c);font-weight:700"';
+const pctOr = (v) => v == null ? '—' : (v * 100).toFixed(1) + '%';
+
+async function renderTransparency() {
+  const r = await api('/transparency');
+  const t = r.data, g = t.global;
+  const perfTable = (rows, nameKey, nameFn) => `<table class="table"><thead><tr><th>${nameKey}</th><th>Réglés</th><th>Réussite</th><th>ROI/pari (1 u.)</th></tr></thead><tbody>
+    ${rows.map((x) => `<tr><td>${nameFn(x)}</td><td>${x.n}</td><td>${pctOr(x.win_rate)}</td><td ${roiClass(x.roi)}>${x.roi == null ? '—' : (x.roi >= 0 ? '+' : '') + (x.roi * 100).toFixed(1) + '%'}</td></tr>`).join('')}
+    </tbody></table>`;
+  app.innerHTML = `<h2 class="section">📊 TRANSPARENCE TOTALE <span class="count">résultats réels, rien d'autre</span></h2>
+    <div class="info" style="margin-bottom:12px">${esc(t.method)}</div>
+    <div class="card"><b>Performance globale ${tagPill('CALCULATED DATA')}</b>
+      <div class="prob-row" style="margin-top:10px">
+        <div class="prob-box"><div class="v">${g.n || 0}</div><div class="l">pronostics réglés</div></div>
+        <div class="prob-box"><div class="v">${pctOr(g.win_rate)}</div><div class="l">taux de réussite réel</div></div>
+        <div class="prob-box"><div class="v" ${roiClass(g.roi)}>${g.roi == null ? '—' : (g.roi >= 0 ? '+' : '') + (g.roi * 100).toFixed(1) + '%'}</div><div class="l">ROI simulé par pari</div></div>
+      </div>
+      ${!g.n ? '<div class="info" style="margin-top:8px">Aucun pronostic réglé pour l\u2019instant — les chiffres apparaîtront dès les premiers matchs terminés. État honnête : jamais de statistiques fictives.</div>' : ''}
+    </div>
+    ${t.daily_last14.length ? `<div class="card"><b>14 derniers jours</b>
+      <div style="display:flex;gap:4px;align-items:flex-end;height:90px;margin-top:12px">
+        ${t.daily_last14.map((d) => { const tot = d.wins + d.losses || 1; return `<div style="flex:1;text-align:center" title="${d.day} : ${d.wins}✅ ${d.losses}❌">
+          <div style="display:flex;flex-direction:column-reverse;height:64px;gap:1px">
+            <div style="height:${(d.wins / tot * 100).toFixed(0)}%;background:var(--ok,#2ecc71);border-radius:2px"></div>
+            <div style="height:${(d.losses / tot * 100).toFixed(0)}%;background:var(--loss,#e74c3c);border-radius:2px;opacity:.7"></div>
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:4px">${d.day.slice(5)}</div></div>`; }).join('')}
+      </div></div>` : ''}
+    ${t.by_market.length ? `<div class="card"><b>Par marché</b>${perfTable(t.by_market, 'Marché', (x) => mktFr(x.market))}</div>` : ''}
+    ${t.by_competition.length ? `<div class="card"><b>Par compétition</b>${perfTable(t.by_competition, 'Compétition', (x) => esc(x.name))}</div>` : ''}
+    ${t.by_decision.length ? `<div class="card"><b>Par type de décision</b>${perfTable(t.by_decision, 'Décision', (x) => x.decision === 'VALUE BET' ? '💎 Value Bet' : x.decision === 'ANALYSIS PICK' ? '🔍 Pronostic d\u2019analyse' : '🎯 Pick')}</div>` : ''}
+    ${t.calibration.length ? `<div class="card"><b>Calibration : probabilité annoncée vs réalité</b>
+      <table class="table"><thead><tr><th>Tranche annoncée</th><th>n</th><th>Prévu</th><th>Réel</th><th>Écart</th></tr></thead><tbody>
+      ${t.calibration.map((c) => `<tr><td>${c.bucket}</td><td>${c.n}</td><td>${pctOr(c.predicted)}</td><td>${pctOr(c.actual)}</td><td ${roiClass(c.gap)}>${(c.gap >= 0 ? '+' : '') + (c.gap * 100).toFixed(1)} pts</td></tr>`).join('')}
+      </tbody></table>
+      <div style="color:var(--muted);font-size:12px;margin-top:6px">Un modèle honnête a des écarts proches de 0 : c'est exactement ce que la calibration automatique corrige chaque jour.</div></div>` : ''}`;
+}
+
+/* ---------------- 💰 BANKROLL VIRTUELLE (v3.4) ---------------- */
+
+const BK_KEY = 'ps_bankroll_v1';
+const bkLoad = () => { try { return JSON.parse(localStorage.getItem(BK_KEY)) || { start: 1000, balance: 1000, bets: [] }; } catch { return { start: 1000, balance: 1000, bets: [] }; } };
+const bkSave = (b) => localStorage.setItem(BK_KEY, JSON.stringify(b));
+
+window.placeBet = (predictionId, fixtureId, odds, label, match) => {
+  if (!odds) { alert('Pas de cote disponible pour ce pronostic.'); return; }
+  const bk = bkLoad();
+  if (bk.bets.some((b) => b.pid === predictionId)) { alert('Vous suivez déjà ce pronostic.'); return; }
+  const stake = parseFloat(prompt(`Mise virtuelle sur :\n${match}\n${label} @ ${odds}\n\nSolde : ${bk.balance.toFixed(2)} unités. Montant ?`, '10'));
+  if (!Number.isFinite(stake) || stake <= 0) return;
+  if (stake > bk.balance) { alert('Solde virtuel insuffisant.'); return; }
+  bk.balance -= stake;
+  bk.bets.unshift({ pid: predictionId, fid: fixtureId, stake, odds, label, match, at: new Date().toISOString(), result: 'PENDING' });
+  bkSave(bk);
+  notifyUser('💰 Mise virtuelle enregistrée', `${stake} u. sur ${label} @ ${odds}`);
+  alert(`✅ Mise enregistrée : ${stake} u. sur « ${label} » @ ${odds}\nSuivi automatique dans l'onglet 💰 Bankroll.`);
+};
+
+async function renderBankroll() {
+  const bk = bkLoad();
+  // règlement automatique : interroger les résultats réels des paris en attente
+  const pending = bk.bets.filter((b) => b.result === 'PENDING').map((b) => b.pid);
+  if (pending.length) {
+    try {
+      const st = await api('/predictions/status?ids=' + pending.join(','));
+      for (const row of st.data) {
+        const bet = bk.bets.find((b) => b.pid === row.id && b.result === 'PENDING');
+        if (bet && row.result !== 'PENDING') {
+          bet.result = row.result;
+          if (row.result === 'WIN') bk.balance += bet.stake * bet.odds;
+          else if (row.result === 'VOID') bk.balance += bet.stake;
+          if (row.result === 'WIN') notifyUser('✅ Pari virtuel gagné !', `${bet.label} — +${(bet.stake * (bet.odds - 1)).toFixed(2)} u.`);
+        }
+      }
+      bkSave(bk);
+    } catch { /* hors ligne : réglé à la prochaine visite */ }
+  }
+  const settled = bk.bets.filter((b) => b.result !== 'PENDING' && b.result !== 'VOID');
+  const wins = settled.filter((b) => b.result === 'WIN');
+  const pnl = bk.balance - bk.start + bk.bets.filter((b) => b.result === 'PENDING').reduce((a, b) => a + b.stake, 0);
+  app.innerHTML = `<h2 class="section">💰 BANKROLL VIRTUELLE <span class="count">aucun argent réel — simulation pédagogique</span></h2>
+    <div class="card"><b>Mon suivi ${tagPill('CALCULATED DATA')}</b>
+      <div class="prob-row" style="margin-top:10px">
+        <div class="prob-box"><div class="v">${bk.balance.toFixed(2)}</div><div class="l">solde (départ ${bk.start})</div></div>
+        <div class="prob-box"><div class="v" ${roiClass(pnl)}>${(pnl >= 0 ? '+' : '') + pnl.toFixed(2)}</div><div class="l">résultat net (u.)</div></div>
+        <div class="prob-box"><div class="v">${settled.length ? (wins.length / settled.length * 100).toFixed(0) + '%' : '—'}</div><div class="l">réussite (${wins.length}/${settled.length})</div></div>
+      </div>
+      <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="fav-btn" onclick="nav('golden')">💎 Miser sur un Prono d'Or</button>
+        <button class="fav-btn" onclick="if(confirm('Réinitialiser la bankroll virtuelle à 1000 u. ?')){localStorage.removeItem('${BK_KEY}');nav('bankroll')}">♻️ Réinitialiser</button>
+      </div>
+    </div>
+    ${bk.bets.length ? bk.bets.map((b) => `<div class="match-row" onclick="openFixture(${b.fid})">
+      <div class="team"><span>${esc(b.match)}</span></div>
+      <div class="match-mid"><div class="score">${b.stake} u. @ ${b.odds}</div><div class="time">${fmtDate(b.at)}</div></div>
+      <div class="match-meta">
+        <span class="pick-pill">🎯 ${esc(b.label)}</span>
+        ${b.result === 'WIN' ? `<span class="pick-pill win">✅ +${(b.stake * (b.odds - 1)).toFixed(2)} u.</span>`
+        : b.result === 'LOSS' ? `<span class="pick-pill loss">❌ −${b.stake.toFixed(2)} u.</span>`
+        : b.result === 'VOID' ? '<span class="pick-pill">⚪ remboursé</span>'
+        : '<span class="pick-pill">⏳ en cours</span>'}
+      </div></div>`).join('')
+    : '<div class="info">Aucune mise virtuelle. Allez sur 💎 Pronos d\u2019Or ou une fiche match et cliquez « 💰 Miser (virtuel) » — 1000 unités fictives pour tester la stratégie sans risque.</div>'}`;
+}
+
+/* ---------------- 🔔 NOTIFICATIONS (v3.4) ---------------- */
+
+function notifyUser(title, body) {
+  try {
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body, icon: '/icons/icon-192.png', badge: '/icons/icon-192.png' });
+    }
+  } catch { /* non supporté */ }
+}
+
+(() => {
+  const btn = document.getElementById('notifBtn');
+  if (!btn || !('Notification' in window)) { btn && (btn.style.display = 'none'); return; }
+  const paint = () => { btn.textContent = Notification.permission === 'granted' ? '🔔' : '🔕'; btn.title = Notification.permission === 'granted' ? 'Notifications activées' : 'Activer les notifications'; };
+  paint();
+  btn.addEventListener('click', async () => {
+    if (Notification.permission === 'granted') { notifyUser('🔔 Notifications actives', 'Vous serez averti : sélections du jour, comptes rendus, paris gagnés.'); return; }
+    await Notification.requestPermission();
+    paint();
+    if (Notification.permission === 'granted') notifyUser('🔔 Notifications activées', 'Expert du jour, comptes rendus post-match et paris virtuels gagnés.');
+  });
+})();

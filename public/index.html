@@ -6,7 +6,10 @@
 <title>PRONO SPORT — Intelligence Football</title>
 <meta name="description" content="Plateforme professionnelle mondiale d'intelligence football : données réelles, modèles statistiques, value bets.">
 <link rel="stylesheet" href="/styles.css">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚽</text></svg>">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0d1321">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="icon" href="/icons/icon-192.png" type="image/png">
 </head>
 <body>
 <header class="topbar">
@@ -21,10 +24,12 @@
   <div class="live-indicator" id="liveIndicator" title="Connexion temps réel">
     <span class="dot"></span><span id="liveCount">SSE</span>
   </div>
+  <button id="notifBtn" class="fav-btn" title="Activer les notifications (Expert du jour, value bets, résultats)" style="margin-left:8px">🔔</button>
 </header>
 
 <nav class="mainnav" id="mainnav">
   <button data-view="home" class="active">Accueil</button>
+  <button data-view="golden">💎 Pronos d'Or</button>
   <button data-view="live">Live</button>
   <button data-view="upcoming">À venir</button>
   <button data-view="finished">Terminés</button>
@@ -32,6 +37,8 @@
   <button data-view="expert">🥇 Expert du jour</button>
   <button data-view="combo">🛡️ Combiné Safe</button>
   <button data-view="tracking">📋 Suivi & Bilan</button>
+  <button data-view="transparency">📊 Transparence</button>
+  <button data-view="bankroll">💰 Bankroll</button>
   <button data-view="value">Value Bets</button>
   <button data-view="predictions">Pronostics</button>
   <button data-view="favorites">Favoris</button>
@@ -62,5 +69,11 @@
 <button class="assistant-fab" onclick="toggleAssistant()" title="Assistant IA">🤖</button>
 
 <script src="/app.js"></script>
+<script>
+// PWA : enregistrement du service worker (installation sur téléphone)
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
+</script>
 </body>
 </html>

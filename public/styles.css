@@ -186,3 +186,10 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .pick-pill.win { border-color:#2e7d32; color:#66bb6a; }
 .pick-pill.loss { border-color:#c62828; color:#ef5350; }
 .comp-logo { width:16px; height:16px; object-fit:contain; vertical-align:-3px; margin-right:4px; }
+
+/* ---------------- v3.4 : Pronos d'Or / Transparence / Bankroll ---------------- */
+:root { --ok: #2ecc71; --loss: #e74c3c; --gold: #f1c40f; }
+.stars { color: var(--gold); letter-spacing: 2px; font-size: 14px; }
+.gold-card { border-left: 3px solid var(--gold); }
+.gold-card:hover { transform: translateY(-1px); transition: transform .15s; }
+#notifBtn { background: none; border: 1px solid var(--border, #2a3350); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 15px; }

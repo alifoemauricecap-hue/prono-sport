@@ -145,8 +145,15 @@ export function evaluateSelection(market, selection, hs, as) {
       return selection === 'OVER' ? hs + as > 2.5 : hs + as < 2.5;
     case 'BTTS':
       return selection === 'YES' ? hs > 0 && as > 0 : hs === 0 || as === 0;
-    default:
+    default: {
+      // HANDICAPS ASIATIQUES demi-lignes : 'AH-0.5', 'AH+0.5', 'AH-1.5', 'AH+1.5'
+      const ah = /^AH([+-]\d+(?:\.\d+)?)$/.exec(market);
+      if (ah) {
+        const line = parseFloat(ah[1]);
+        return selection === 'HOME' ? hs + line - as > 0 : hs + line - as < 0;
+      }
       return null;
+    }
   }
 }
 

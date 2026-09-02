@@ -183,6 +183,8 @@ export function predictFixture(model, homeKey, awayKey) {
       'OU2.5': mDc['OU2.5'],
       BTTS: mDc.BTTS,
       DC: { '1X': ens.home + ens.draw, X2: ens.draw + ens.away, '12': ens.home + ens.away },
+      'AH-0.5': mDc['AH-0.5'], 'AH+0.5': mDc['AH+0.5'],
+      'AH-1.5': mDc['AH-1.5'], 'AH+1.5': mDc['AH+1.5'],
     },
     lambdas: { home: eg.lambdaHome, away: eg.lambdaAway },
     depth: { home: eg.nHome, away: eg.nAway },

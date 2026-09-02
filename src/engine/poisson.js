@@ -99,7 +99,24 @@ export function marketsFromMatrix(M) {
     'OU2.5': { OVER: over25, UNDER: 1 - over25 },
     BTTS: { YES: btts, NO: 1 - btts },
     DC: { '1X': home + draw, X2: draw + away, '12': home + away },
+    // HANDICAPS ASIATIQUES demi-lignes (v3.4) — probabilités exactes issues
+    // de la matrice de scores : HOME couvre si (h + ligne − a) > 0.
+    'AH-0.5': { HOME: home, AWAY: draw + away },
+    'AH+0.5': { HOME: home + draw, AWAY: away },
+    'AH-1.5': ahFromMatrix(M, -1.5),
+    'AH+1.5': ahFromMatrix(M, 1.5),
   };
+}
+
+/** Probabilités d'un handicap asiatique demi-ligne depuis la matrice. */
+function ahFromMatrix(M, line) {
+  let homeCovers = 0;
+  for (let h = 0; h < M.length; h++) {
+    for (let a = 0; a < M[h].length; a++) {
+      if (h + line - a > 0) homeCovers += M[h][a];
+    }
+  }
+  return { HOME: homeCovers, AWAY: 1 - homeCovers };
 }
 
 /**

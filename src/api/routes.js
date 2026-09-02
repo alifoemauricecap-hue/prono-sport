@@ -14,6 +14,7 @@ import { fetchMatchWeather, geocode } from '../providers/openMeteo.js';
 import { getLiveHistory } from '../engine/live.js';
 import { teamProfile, computeStandings } from '../engine/context.js';
 import { dailyStats, weeklyStats, getDailySelection, getLessons, todayUtc, ensureDailySelections, sameRealMatch } from '../engine/daily.js';
+import { goldenPicks, transparencyReport, headToHead } from '../engine/insights.js';
 
 export const api = express.Router();
 
@@ -398,6 +399,41 @@ api.post('/assistant', express.json(), (req, res) => {
 });
 
 // ---------- SÉLECTIONS DU JOUR : Expert + Combiné Safe + Suivi ----------
+
+// 💎 PRONOS D'OR (v3.4) : les picks les plus sûrs des 48 h, tous marchés
+api.get('/golden-picks', (req, res) => {
+  const picks = goldenPicks({ hours: 48, limit: 14 });
+  res.json({ data: picks, tags: { probability: 'MODEL ESTIMATE (calibré)', reliability: 'CALCULATED DATA (historique réel par marché)' },
+    note: picks.length ? 'Classement par probabilité calibrée. La fiabilité = % de réussite réel du marché sur les pronostics déjà réglés (affichée dès 10 réglés).'
+      : 'Aucun pronostic qualifié dans les 48 prochaines heures — état honnête.' });
+});
+
+// 📊 TRANSPARENCE (v3.4) : performance publique sur résultats réels
+api.get('/transparency', (req, res) => {
+  res.json({ data: transparencyReport(),
+    tags: { all: 'CALCULATED DATA — pronostics réellement réglés uniquement, aucune extrapolation' } });
+});
+
+// Face-à-face réel entre les deux équipes d'un match (toutes compétitions)
+api.get('/fixtures/:id/h2h', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
+  const f = db.prepare(`SELECT home_team_id, away_team_id FROM fixtures WHERE id=?`).get(id);
+  if (!f) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ data: headToHead(f.home_team_id, f.away_team_id, 10),
+    tags: { all: 'SOURCE DATA — confrontations réelles en base' } });
+});
+
+// Statut de pronostics par ids (suivi de bankroll virtuelle côté client)
+api.get('/predictions/status', (req, res) => {
+  const ids = String(req.query.ids || '').split(',').map((x) => parseInt(x, 10))
+    .filter(Number.isFinite).slice(0, 100);
+  if (!ids.length) return res.json({ data: [] });
+  const rows = db.prepare(`SELECT id, fixture_id, market, selection, odds, result
+      FROM predictions WHERE id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+  res.json({ data: rows });
+});
+
 api.get(['/day', '/day/:date'], (req, res) => {
   const day = /^\d{4}-\d{2}-\d{2}$/.test(req.params.date || '') ? req.params.date : todayUtc();
   const rows = db.prepare(`${FIXTURE_SELECT} WHERE date(f.kickoff_utc)=? ORDER BY f.kickoff_utc ASC LIMIT 500`).all(day);

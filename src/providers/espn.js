@@ -218,6 +218,10 @@ export async function fetchMatchCenter(compCode, espnEventId, ttlMs = 60_000) {
     ouLine: pc.overUnder ?? null,
     over: americanToDecimal(pc.overOdds),
     under: americanToDecimal(pc.underOdds),
+    // handicap asiatique demi-ligne (v3.4) : spread côté domicile
+    spread: typeof pc.spread === 'number' ? pc.spread : null,
+    homeSpread: americanToDecimal(pc.homeTeamOdds?.spreadOdds),
+    awaySpread: americanToDecimal(pc.awayTeamOdds?.spreadOdds),
   } : null;
   const st = data.header?.competitions?.[0]?.status || null;
   return {
@@ -257,6 +261,13 @@ export async function syncEspnOdds(hoursAhead = 72, limit = 40) {
         if (mc.odds.ouLine === 2.5 && mc.odds.over && mc.odds.under) {
           saveOdds(r.id, book, 'OU2.5', 'OVER', mc.odds.over, SOURCE_ID);
           saveOdds(r.id, book, 'OU2.5', 'UNDER', mc.odds.under, SOURCE_ID);
+        }
+        // handicap asiatique demi-ligne supportée par le modèle (v3.4)
+        const sp = mc.odds.spread;
+        if (sp != null && [-1.5, -0.5, 0.5, 1.5].includes(sp) && mc.odds.homeSpread && mc.odds.awaySpread) {
+          const mkt = `AH${sp > 0 ? '+' : ''}${sp}`;
+          saveOdds(r.id, book, mkt, 'HOME', mc.odds.homeSpread, SOURCE_ID);
+          saveOdds(r.id, book, mkt, 'AWAY', mc.odds.awaySpread, SOURCE_ID);
         }
         found++;
       }

@@ -1,0 +1,15 @@
+{
+  "name": "PRONO SPORT — Pronostics football professionnels",
+  "short_name": "Prono Sport",
+  "description": "Pronostics football fondés sur données réelles : value bets, expert du jour, combiné safe, suivi live, transparence totale.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d1321",
+  "theme_color": "#0d1321",
+  "lang": "fr",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}
