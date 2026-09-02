@@ -50,8 +50,9 @@ function dayCandidates(day) {
 const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
 const prefixOf = (a, b) => a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a));
 // même match réel : mêmes équipes (préfixes complets) et coups d'envoi à moins
-// de 3 h d'écart (les sources divergent parfois d'1 h — fuseau/heure d'été)
-const sameRealMatch = (a, b) =>
+// de 3 h d'écart (les sources divergent parfois d'1 h — fuseau/heure d'été).
+// Exporté : utilisé aussi pour dédoublonner la liste des matchs du jour (API).
+export const sameRealMatch = (a, b) =>
   Math.abs(new Date(a.kickoff_utc) - new Date(b.kickoff_utc)) <= 3 * 3600_000
   && prefixOf(normName(a.home_name), normName(b.home_name))
   && prefixOf(normName(a.away_name), normName(b.away_name));

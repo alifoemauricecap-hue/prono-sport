@@ -13,7 +13,7 @@ import { liveEvents } from '../workers/scheduler.js';
 import { fetchMatchWeather, geocode } from '../providers/openMeteo.js';
 import { getLiveHistory } from '../engine/live.js';
 import { teamProfile, computeStandings } from '../engine/context.js';
-import { dailyStats, weeklyStats, getDailySelection, getLessons, todayUtc, ensureDailySelections } from '../engine/daily.js';
+import { dailyStats, weeklyStats, getDailySelection, getLessons, todayUtc, ensureDailySelections, sameRealMatch } from '../engine/daily.js';
 
 export const api = express.Router();
 
@@ -406,8 +406,20 @@ api.get(['/day', '/day/:date'], (req, res) => {
       WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')`).all(day);
   const byFixture = {};
   for (const p of preds) if (!byFixture[p.fixture_id]) byFixture[p.fixture_id] = p;
+  // DÉDOUBLONNAGE INTER-SOURCES (§v3.3) : même match ingéré sous deux
+  // orthographes (« Al Fayha » ESPN vs « Al-Fayha » CSV) → une seule ligne.
+  // On garde la version la plus riche : pronostic > nb de sources > VERIFIED.
+  const richness = (f) => (byFixture[f.id] ? 4 : 0)
+    + (JSON.parse(f.source_ids || '[]').length)
+    + (f.validation_status === 'VERIFIED' ? 1 : 0);
+  const fixtures = [];
+  for (const f of rows) {
+    const dupIdx = fixtures.findIndex((x) => sameRealMatch(x, f));
+    if (dupIdx === -1) fixtures.push(f);
+    else if (richness(f) > richness(fixtures[dupIdx])) fixtures[dupIdx] = f;
+  }
   res.json({ data: {
-    day, fixtures: decorate(rows).map((f) => ({ ...f, pick: byFixture[f.id] || null })),
+    day, fixtures: decorate(fixtures).map((f) => ({ ...f, pick: byFixture[f.id] || null })),
     stats: dailyStats(day),
   } });
 });
