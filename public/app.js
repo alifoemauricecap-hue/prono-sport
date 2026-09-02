@@ -51,7 +51,8 @@ function matchRow(m) {
     <div>${badge(m.away_badge, m.away_name)}</div>
     <div class="match-meta">
       ${statusPill(m.status)} ${validPill(m.validation_status)} ${freshPill(m.freshness)}
-      <span>${esc(m.comp_name)} · ${esc(m.country || '')}</span>
+      ${m.pick ? `<span class="pick-pill ${m.pick.result === 'WIN' ? 'win' : m.pick.result === 'LOSS' ? 'loss' : ''}">🎯 ${esc(m.pick.market)}/${esc(m.pick.selection)} · ${(m.pick.probability * 100).toFixed(0)}%${m.pick.result === 'WIN' ? ' ✅' : m.pick.result === 'LOSS' ? ' ❌' : ''}</span>` : ''}
+      <span>${m.comp_logo ? `<img class="comp-logo" src="${esc(m.comp_logo)}" alt="" loading="lazy" onerror="this.remove()">` : ''}${esc(m.comp_name)} · ${esc(m.country || '')}</span>
       ${m.venue_name ? `<span>🏟 ${esc(m.venue_name)}</span>` : ''}
       <span>Sources : ${(m.source_ids || []).join(', ')}</span>
     </div>
@@ -64,6 +65,7 @@ window.nav = (view, arg) => {
   document.querySelectorAll('.mainnav button').forEach((b) => b.classList.toggle('active', b.dataset.view === view));
   const views = {
     home: renderHome, live: renderLive, upcoming: renderUpcoming, finished: renderFinished,
+    expert: renderExpert, combo: renderCombo, tracking: renderTracking,
     competitions: renderCompetitions, value: renderValue, predictions: renderPredictions,
     favorites: renderFavorites, coverage: renderCoverage, sources: renderSources,
     backtest: renderBacktest, admin: renderAdmin,
@@ -97,20 +99,28 @@ async function renderLive() {
     ${live.data.length ? live.data.map(matchRow).join('') : `<div class="card">${esc(live.note || '')}</div>`}`;
 }
 
-async function renderUpcoming() {
-  const comps = await api('/competitions');
-  const withGames = comps.data.filter((c) => c.upcoming > 0);
-  const sel = `<select id="compFilter" onchange="filterUpcoming()" style="background:var(--card2);color:var(--text);border:1px solid var(--border);padding:8px 12px;border-radius:8px;margin-bottom:12px">
-    <option value="">Toutes les compétitions</option>
-    ${withGames.map((c) => `<option value="${esc(c.code)}">${esc(c.name)} (${esc(c.country || '')})</option>`).join('')}</select>`;
-  const up = await api('/fixtures/upcoming?days=14');
-  app.innerHTML = `<h2 class="section">📅 Matchs à venir (14 jours)</h2>${sel}<div id="upList">${up.data.map(matchRow).join('') || '<div class="info">DATA UNAVAILABLE — aucun match à venir dans les sources.</div>'}</div>`;
-}
-window.filterUpcoming = async () => {
-  const c = $('#compFilter').value;
-  const up = await api('/fixtures/upcoming?days=14' + (c ? '&competition=' + encodeURIComponent(c) : ''));
-  $('#upList').innerHTML = up.data.map(matchRow).join('') || '<div class="info">Aucun match.</div>';
+const dayLabel = (offset) => {
+  const d = new Date(Date.now() + offset * 86400000);
+  const iso = d.toISOString().slice(0, 10);
+  const label = offset === 0 ? "Aujourd'hui" : offset === 1 ? 'Demain'
+    : d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+  return { iso, label };
 };
+
+async function renderUpcoming(dayIso) {
+  const days = Array.from({ length: 7 }, (_, i) => dayLabel(i));
+  const active = dayIso || days[0].iso;
+  const dj = await api('/day/' + active);
+  const fx = dj.data.fixtures.filter((f) => !['FINISHED'].includes(f.status) || active !== days[0].iso);
+  const tabs = `<div class="day-tabs">${days.map((d) =>
+    `<button class="${d.iso === active ? 'active' : ''}" onclick="nav('upcoming','${d.iso}')">${esc(d.label)}</button>`).join('')}</div>`;
+  const st = dj.data.stats;
+  const bar = st && (st.counts.WIN + st.counts.LOSS + st.counts.PENDING) > 0
+    ? `<div class="info">Pronostics du jour : ✅ ${st.counts.WIN} validés · ❌ ${st.counts.LOSS} non validés · ⏳ ${st.counts.PENDING} en cours${st.win_rate != null ? ` · taux réel ${(st.win_rate * 100).toFixed(0)}%` : ''}</div>` : '';
+  app.innerHTML = `<h2 class="section">📅 Matchs du jour <span class="count">${esc(active)} — ${dj.data.fixtures.length} matchs</span></h2>
+    ${tabs}${bar}
+    <div id="upList">${dj.data.fixtures.map((m) => matchRow(m)).join('') || '<div class="info">Aucun match dans les sources pour ce jour — état honnête, rien d\u2019inventé.</div>'}</div>`;
+}
 
 async function renderFinished() {
   const fin = await api('/fixtures/finished');
@@ -373,6 +383,7 @@ window.openFixture = async (id) => {
       <button data-tab="cotes">Cotes</button>
       <button data-tab="analyse">Analyse</button>
       <button data-tab="prono">Pronostics</button>
+      ${played ? '<button data-tab="bilan">📋 Compte rendu</button>' : ''}
       <button data-tab="meteo">Météo</button>
     </div>
     <div id="mcBody"><div class="loading">…</div></div>`;
@@ -481,6 +492,21 @@ async function loadTab(tab, m) {
     } else if (tab === 'analyse' || tab === 'prono') {
       const r = await api(`/fixtures/${m.id}/analysis`);
       body.innerHTML = renderAnalysis(r.data, m, tab);
+    } else if (tab === 'bilan') {
+      const rv = await api(`/reviews/${m.id}`);
+      if (!rv.data) {
+        body.innerHTML = `<div class="info">${esc(rv.note || 'Compte rendu en préparation — généré automatiquement après le match (recherche des faits de jeu en cours).')}</div>`;
+      } else {
+        const r = rv.data;
+        const vlabel = { VALIDATED: '✅ PRONOSTIC VALIDÉ', NOT_VALIDATED: '❌ PRONOSTIC NON VALIDÉ', MIXED: '➗ RÉSULTAT MIXTE', NO_PICK: 'Aucun pronostic sur ce match' }[r.verdict] || r.verdict;
+        body.innerHTML = `
+          <div class="card"><b>${vlabel}</b>
+            <pre style="white-space:pre-wrap;font-family:inherit;margin-top:10px">${esc(r.summary)}</pre>
+            <div style="color:var(--muted);font-size:12px;margin-top:8px">Sources consultées : ${esc(r.research_sources || '—')} · généré le ${fmtDate(r.created_at)}</div>
+          </div>
+          ${r.factors?.factors?.length ? `<div class="card"><b>Faits observés (chacun avec provenance)</b>
+            <div class="timeline" style="margin-top:10px">${r.factors.factors.map((f) => `<div class="ev">${esc(f.detail)} <small style="color:var(--muted)">[${esc(f.tag)} · ${esc(f.source || '')}]</small></div>`).join('')}</div></div>` : ''}`;
+      }
     } else if (tab === 'meteo') {
       const w = await api(`/fixtures/${m.id}/weather`);
       if (!w.data) { body.innerHTML = `<div class="info">WEATHER DATA UNAVAILABLE — ${esc(w.reason || 'localisation ou fenêtre de prévision indisponible.')}</div>`; return; }
@@ -761,3 +787,107 @@ try {
 } catch { /* SSE non supporté */ }
 
 nav('home');
+
+/* ---------------- EXPERT DU JOUR / COMBINÉ SAFE / SUIVI & BILAN ---------------- */
+
+function legRow(l) {
+  const res = l.result === 'WIN' ? '<span class="pick-pill win">✅ validé</span>'
+    : l.result === 'LOSS' ? '<span class="pick-pill loss">❌ non validé</span>'
+    : l.result === 'VOID' ? '<span class="pick-pill">⚪ annulé</span>'
+    : '<span class="pick-pill">⏳ en cours</span>';
+  return `<div class="match-row" onclick="openFixture(${l.fixture_id})">
+    <div class="team"><span>${esc(l.home_name)} vs ${esc(l.away_name)}</span></div>
+    <div class="match-mid"><div class="score">${(l.adjusted_probability * 100).toFixed(0)}%</div>
+      <div class="time">${fmtDate(l.kickoff_utc)}</div></div>
+    <div class="match-meta">
+      <span class="pick-pill">🎯 ${esc(l.market)}/${esc(l.selection)}</span>
+      ${l.odds ? `<span>cote ${l.odds}</span>` : ''}
+      <span>${esc(l.comp_name)}</span>
+      ${res}
+    </div></div>`;
+}
+
+function selectionStatus(s) {
+  return { OPEN: '🟢 Ouverte (se met à jour jusqu\u2019au 1er coup d\u2019envoi)',
+    LOCKED: '🔒 Verrouillée — plus aucune modification (§34)',
+    WON: '✅ GAGNÉE', LOST: '❌ PERDUE', VOID: '⚪ ANNULÉE' }[s.status] || s.status;
+}
+
+async function renderExpert() {
+  const r = await api('/expert');
+  const s = r.data;
+  app.innerHTML = `<h2 class="section">🥇 PRONOSTIC EXPERT DU JOUR</h2>
+    ${!s ? `<div class="info">${esc(r.note)}</div>` : `
+    <div class="card">
+      <b>${selectionStatus(s)}</b>
+      <div class="prob-row" style="margin-top:10px">
+        <div class="prob-box"><div class="v">${s.legs.length}</div><div class="l">pronostics retenus</div></div>
+        <div class="prob-box"><div class="v">${(s.combined_probability * 100).toFixed(1)}%</div><div class="l">probabilité que TOUS passent</div></div>
+        <div class="prob-box"><div class="v">${s.combined_odds}</div><div class="l">cote cumulée</div></div>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-top:8px">${esc(r.note)}</div>
+    </div>
+    ${s.legs.map(legRow).join('')}`}`;
+}
+
+async function renderCombo() {
+  const r = await api('/safe-combo');
+  const s = r.data;
+  app.innerHTML = `<h2 class="section">🛡️ COMBINÉ SAFE DU JOUR <span class="count">cote visée ≈ 3</span></h2>
+    ${!s ? `<div class="info">${esc(r.note)}</div>` : `
+    <div class="card">
+      <b>${selectionStatus(s)}</b>
+      <div class="prob-row" style="margin-top:10px">
+        <div class="prob-box"><div class="v">${s.combined_odds}</div><div class="l">cote totale du combiné</div></div>
+        <div class="prob-box"><div class="v">${(s.combined_probability * 100).toFixed(1)}%</div><div class="l">probabilité globale (MODEL ESTIMATE)</div></div>
+        <div class="prob-box"><div class="v">${s.legs.length}</div><div class="l">matchs combinés</div></div>
+      </div>
+      <div style="color:var(--muted);font-size:12px;margin-top:8px">${esc(r.note)}</div>
+    </div>
+    ${s.legs.map(legRow).join('')}`}`;
+}
+
+async function renderTracking() {
+  const [daily, weekly, lessons, reviews] = await Promise.all([
+    api('/stats/daily'), api('/stats/weekly'), api('/lessons'), api('/reviews'),
+  ]);
+  const d = daily.data, w = weekly.data;
+  const settledW = w.predictions.reduce((acc, x) => { acc[x.result] = x; return acc; }, {});
+  const winW = settledW.WIN?.n || 0, lossW = settledW.LOSS?.n || 0;
+  const selRow = (s, label) => s ? `<dt>${label}</dt><dd>${selectionStatus(s)} — ${s.legs.length} match(s), prob. ${(s.combined_probability * 100).toFixed(1)}%, cote ${s.combined_odds}</dd>` : `<dt>${label}</dt><dd>—</dd>`;
+  app.innerHTML = `<h2 class="section">📋 SUIVI & BILAN DES PRONOSTICS</h2>
+    <div class="card"><b>📅 Aujourd'hui (${esc(d.day)}) ${tagPill('CALCULATED DATA')}</b>
+      <div class="prob-row" style="margin-top:10px">
+        <div class="prob-box"><div class="v">${d.counts.WIN}</div><div class="l">✅ validés</div></div>
+        <div class="prob-box"><div class="v">${d.counts.LOSS}</div><div class="l">❌ non validés</div></div>
+        <div class="prob-box"><div class="v">${d.counts.PENDING}</div><div class="l">⏳ en cours</div></div>
+        <div class="prob-box"><div class="v">${d.win_rate != null ? (d.win_rate * 100).toFixed(0) + '%' : '—'}</div><div class="l">taux réel du jour</div></div>
+      </div>
+      <div class="kv" style="margin-top:10px">
+        ${selRow(d.expert, '🥇 Expert du jour')}
+        ${selRow(d.combo, '🛡️ Combiné Safe')}
+      </div>
+    </div>
+    <div class="card"><b>🗓 Semaine du ${esc(w.from)} au ${esc(w.to)}</b>
+      <div class="prob-row" style="margin-top:10px">
+        <div class="prob-box"><div class="v">${winW}</div><div class="l">✅ validés</div></div>
+        <div class="prob-box"><div class="v">${lossW}</div><div class="l">❌ non validés</div></div>
+        <div class="prob-box"><div class="v">${winW + lossW ? ((winW / (winW + lossW)) * 100).toFixed(0) + '%' : '—'}</div><div class="l">taux réel</div></div>
+        <div class="prob-box"><div class="v">${settledW.WIN || settledW.LOSS ? (((settledW.WIN?.units || 0) + (settledW.LOSS?.units || 0))).toFixed(1) : '—'}</div><div class="l">unités (mise 1 par prono)</div></div>
+      </div>
+      ${w.per_market.length ? `<table class="table" style="margin-top:10px"><tr><th>Marché</th><th>Résultat</th><th>Nombre</th></tr>
+        ${w.per_market.map((x) => `<tr><td>${esc(x.market)}</td><td>${x.result === 'WIN' ? '✅' : '❌'}</td><td>${x.n}</td></tr>`).join('')}</table>` : ''}
+    </div>
+    <div class="card"><b>🧠 Leçons du modèle ${tagPill('CALCULATED DATA')}</b>
+      <div style="color:var(--muted);font-size:12px;margin:6px 0">${esc(lessons.note)}</div>
+      ${lessons.data.length ? lessons.data.map((l) => `<div class="ev" style="margin-top:6px"><b>${esc(l.scope)}</b> — ${esc(l.observation)}<br><small style="color:var(--muted)">Échantillon : ${l.sample_size} · Action : ${esc(l.adjustment)}</small></div>`).join('')
+        : '<div class="info">Pas encore assez de pronostics réglés pour tirer des leçons — elles apparaîtront automatiquement.</div>'}
+    </div>
+    <h2 class="section">📝 Derniers comptes rendus post-match</h2>
+    ${reviews.data.length ? reviews.data.map((r) => `<div class="match-row" onclick="openFixture(${r.fixture_id})">
+      <div class="team"><span>${esc(r.home_name)} ${r.home_score}-${r.away_score} ${esc(r.away_name)}</span></div>
+      <div class="match-meta">
+        <span class="pick-pill ${r.verdict === 'VALIDATED' ? 'win' : r.verdict === 'NOT_VALIDATED' ? 'loss' : ''}">${r.verdict === 'VALIDATED' ? '✅ validé' : r.verdict === 'NOT_VALIDATED' ? '❌ non validé' : r.verdict}</span>
+        <span>${esc(r.comp_name)}</span><span>${fmtDate(r.kickoff_utc)}</span>
+      </div></div>`).join('') : '<div class="info">Aucun compte rendu encore — générés automatiquement après chaque match pronostiqué.</div>'}`;
+}

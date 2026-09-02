@@ -108,6 +108,11 @@ export async function syncLeagueYears(code, years, ttlMs = 6 * 3600_000) {
   let n = 0;
   for (const year of years) {
     const { data } = await politeJson(`${BASE}/${meta.espn}/scoreboard?dates=${year}&limit=1000`, ttlMs);
+    // logo officiel de la compétition (SOURCE DATA) — capté au passage
+    const leagueLogo = data?.leagues?.[0]?.logos?.[0]?.href;
+    if (leagueLogo) {
+      db.prepare(`UPDATE competitions SET logo_url=COALESCE(logo_url, ?) WHERE code=?`).run(leagueLogo, code);
+    }
     const events = data?.events || [];
     let i = 0;
     for (const ev of events) {
@@ -134,6 +139,20 @@ export async function syncEspnHistory() {
     }
   }
   return { total, errors };
+}
+
+/** Résumé officiel d'un match (recherche ciblée post-match) : buts, cartons,
+ *  remplacements — pour le compte rendu du pronostic. */
+export async function fetchEventSummary(compCode, espnEventId) {
+  const meta = espnComps()[compCode];
+  if (!meta) return null;
+  const { data } = await politeJson(`${BASE}/${meta.espn}/summary?event=${espnEventId}`, 24 * 3600_000);
+  const keyEvents = (data?.keyEvents || []).map((ev) => ({
+    kind: ev.type?.text || ev.type?.id || 'événement',
+    minute: ev.clock?.displayValue || null,
+    text: `${ev.clock?.displayValue ? ev.clock.displayValue + ' ' : ''}${ev.type?.text || ''}${ev.team?.displayName ? ' — ' + ev.team.displayName : ''}${ev.participants?.length ? ' (' + ev.participants.map((p) => p.athlete?.displayName).filter(Boolean).join(', ') + ')' : ''}`.trim(),
+  })).filter((e) => e.text);
+  return { keyEvents };
 }
 
 /** Suivi du jour, CIBLÉ : uniquement les compétitions ayant un match aujourd'hui

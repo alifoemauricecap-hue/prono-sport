@@ -253,3 +253,70 @@ export function ingestKnownLeagueEvent(ev) {
   if (dl) return ingestDynamicEvent(ev, dl.competition_id, { name: dl.name, country: dl.country });
   return null;
 }
+
+/* ==================== LOGO ENGINE (équipes + compétitions) ====================
+ * « Toutes les équipes des matchs du jour doivent avoir leur logo. »
+ * Recherche ciblée, polie (2 s entre appels), uniquement pour ce qui manque :
+ *   - équipes sans badge jouant dans les 72 h → searchteams.php (badge officiel)
+ *   - compétitions sans logo avec id TSDB connu → lookupleague.php (strBadge)
+ * Aucun logo inventé : si la source n'en publie pas, l'UI affiche l'initiale. */
+export async function backfillTeamBadges(limit = 15) {
+  const teams = db.prepare(`SELECT DISTINCT t.id, t.name, t.country FROM teams t
+      JOIN fixtures f ON (f.home_team_id=t.id OR f.away_team_id=t.id)
+      WHERE t.badge_url IS NULL
+        AND f.kickoff_utc BETWEEN datetime('now', '-6 hours') AND datetime('now', '+72 hours')
+      LIMIT ?`).all(limit);
+  let found = 0;
+  for (const t of teams) {
+    try {
+      const { data } = await fetchJson(`${BASE()}/searchteams.php?t=${encodeURIComponent(t.name)}`,
+        { sourceId: SOURCE_ID, ttlMs: 7 * 24 * 3600_000 });
+      const candidates = (data?.teams || []).filter((x) => x.strSport === 'Soccer');
+      // correspondance stricte : même pays si connu, sinon nom exact — jamais un logo au hasard
+      const match = candidates.find((x) => t.country && x.strCountry === t.country)
+        || candidates.find((x) => (x.strTeam || '').toLowerCase() === t.name.toLowerCase());
+      if (match?.strBadge) {
+        db.prepare(`UPDATE teams SET badge_url=? WHERE id=?`).run(match.strBadge, t.id);
+        found++;
+      }
+    } catch (e) {
+      if (String(e.message).includes('429')) break; // respect strict du tier gratuit
+    }
+    await sleep(THROTTLE_MS);
+  }
+  return { checked: teams.length, found };
+}
+
+export async function backfillCompetitionLogos(limit = 8) {
+  const comps = db.prepare(`SELECT id, code FROM competitions WHERE logo_url IS NULL LIMIT 50`).all();
+  let found = 0, done = 0;
+  for (const comp of comps) {
+    if (done >= limit) break;
+    // id TSDB : config (divisions/extraLeagues) ou ligue découverte
+    let tsdbId = null;
+    for (const meta of [CONFIG.divisions[comp.code], CONFIG.extraLeagues?.[comp.code]]) {
+      if (meta?.tsdbLeagueId) tsdbId = meta.tsdbLeagueId;
+    }
+    if (!tsdbId && comp.code.startsWith('TSDB-')) tsdbId = comp.code.slice(5);
+    if (!tsdbId) {
+      const dl = db.prepare(`SELECT tsdb_id FROM discovered_leagues WHERE competition_code=?`).get(comp.code);
+      tsdbId = dl?.tsdb_id || null;
+    }
+    if (!tsdbId) continue;
+    done++;
+    try {
+      const { data } = await fetchJson(`${BASE()}/lookupleague.php?id=${tsdbId}`,
+        { sourceId: SOURCE_ID, ttlMs: 7 * 24 * 3600_000 });
+      const lg = data?.leagues?.[0];
+      const logo = lg?.strBadge || lg?.strLogo || null;
+      if (logo) {
+        db.prepare(`UPDATE competitions SET logo_url=? WHERE id=?`).run(logo, comp.id);
+        found++;
+      }
+    } catch (e) {
+      if (String(e.message).includes('429')) break;
+    }
+    await sleep(THROTTLE_MS);
+  }
+  return { checked: done, found };
+}

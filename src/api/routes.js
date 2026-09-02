@@ -13,6 +13,7 @@ import { liveEvents } from '../workers/scheduler.js';
 import { fetchMatchWeather, geocode } from '../providers/openMeteo.js';
 import { getLiveHistory } from '../engine/live.js';
 import { teamProfile, computeStandings } from '../engine/context.js';
+import { dailyStats, weeklyStats, getDailySelection, getLessons, todayUtc, ensureDailySelections } from '../engine/daily.js';
 
 export const api = express.Router();
 
@@ -31,7 +32,7 @@ api.use((req, res, next) => {
 const FIXTURE_SELECT = `SELECT f.id, f.kickoff_utc, f.status, f.home_score, f.away_score,
   f.ht_home, f.ht_away, f.round, f.validation_status, f.source_ids, f.data_tag,
   f.updated_at, f.season_code,
-  c.id AS competition_id, c.code AS comp_code, c.name AS comp_name,
+  c.id AS competition_id, c.code AS comp_code, c.name AS comp_name, c.logo_url AS comp_logo,
   co.name AS country,
   ht.id AS home_id, ht.name AS home_name, ht.badge_url AS home_badge,
   at2.id AS away_id, at2.name AS away_name, at2.badge_url AS away_badge,
@@ -337,6 +338,70 @@ api.get('/favorites/:userKey', (req, res) => {
 api.post('/assistant', express.json(), (req, res) => {
   const { question, fixtureId } = req.body || {};
   res.json({ data: assistantAnswer(String(question || '').slice(0, 500), fixtureId ? parseInt(fixtureId, 10) : null) });
+});
+
+// ---------- SÉLECTIONS DU JOUR : Expert + Combiné Safe + Suivi ----------
+api.get(['/day', '/day/:date'], (req, res) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(req.params.date || '') ? req.params.date : todayUtc();
+  const rows = db.prepare(`${FIXTURE_SELECT} WHERE date(f.kickoff_utc)=? ORDER BY f.kickoff_utc ASC LIMIT 500`).all(day);
+  const preds = db.prepare(`SELECT p.fixture_id, p.market, p.selection, p.probability, p.odds, p.decision, p.result
+      FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
+      WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET')`).all(day);
+  const byFixture = {};
+  for (const p of preds) if (!byFixture[p.fixture_id]) byFixture[p.fixture_id] = p;
+  res.json({ data: {
+    day, fixtures: decorate(rows).map((f) => ({ ...f, pick: byFixture[f.id] || null })),
+    stats: dailyStats(day),
+  } });
+});
+
+api.get(['/expert', '/expert/:date'], (req, res) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(req.params.date || '') ? req.params.date : todayUtc();
+  if (day === todayUtc()) ensureDailySelections(day); // à jour tant que non verrouillé
+  const sel = getDailySelection(day, 'EXPERT');
+  res.json({ data: sel, note: sel
+    ? 'Pronostics à plus forte probabilité de validation du jour. Probabilités = MODEL ESTIMATE calibré sur résultats réels. Sélection verrouillée au premier coup d\'envoi.'
+    : 'Aucun pronostic ne dépasse le seuil expert (probabilité ≥ 62% + qualité de données) pour ce jour — état honnête, pas de remplissage.' });
+});
+
+api.get(['/safe-combo', '/safe-combo/:date'], (req, res) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(req.params.date || '') ? req.params.date : todayUtc();
+  if (day === todayUtc()) ensureDailySelections(day);
+  const sel = getDailySelection(day, 'SAFE_COMBO');
+  res.json({ data: sel, note: sel
+    ? 'Combiné visant une cote totale ~3 avec la probabilité combinée maximale (produit des probabilités individuelles, hypothèse d\'indépendance — MODEL ESTIMATE). Verrouillé au premier coup d\'envoi.'
+    : 'Pas assez de pronostics qualifiés aujourd\'hui pour construire un combiné sûr (cote 2,5-3,6) — état honnête.' });
+});
+
+api.get('/reviews/:fixtureId', (req, res) => {
+  const id = parseInt(req.params.fixtureId, 10);
+  const r = db.prepare(`SELECT * FROM prediction_reviews WHERE fixture_id=?`).get(id);
+  if (!r) return res.json({ data: null, note: 'Compte rendu pas encore généré (créé automatiquement après le match).' });
+  res.json({ data: { ...r, factors: JSON.parse(r.factors_json), factors_json: undefined } });
+});
+
+api.get('/reviews', (req, res) => {
+  const rows = db.prepare(`SELECT r.*, f.home_score, f.away_score, f.kickoff_utc,
+      ht.name AS home_name, at2.name AS away_name, c.name AS comp_name
+      FROM prediction_reviews r JOIN fixtures f ON f.id=r.fixture_id
+      JOIN teams ht ON ht.id=f.home_team_id JOIN teams at2 ON at2.id=f.away_team_id
+      JOIN competitions c ON c.id=f.competition_id
+      ORDER BY f.kickoff_utc DESC LIMIT 50`).all();
+  res.json({ data: rows.map((r) => ({ ...r, factors: JSON.parse(r.factors_json), factors_json: undefined })) });
+});
+
+api.get(['/stats/daily', '/stats/daily/:date'], (req, res) => {
+  const day = /^\d{4}-\d{2}-\d{2}$/.test(req.params.date || '') ? req.params.date : todayUtc();
+  res.json({ data: dailyStats(day) });
+});
+
+api.get('/stats/weekly', (req, res) => {
+  const back = Math.min(parseInt(req.query.back || '0', 10) || 0, 8);
+  res.json({ data: weeklyStats(back) });
+});
+
+api.get('/lessons', (req, res) => {
+  res.json({ data: getLessons(), note: 'Conclusions CALCULÉES sur les résultats réels des pronostics réglés — aucun ajustement sans échantillon suffisant (min. 30).' });
 });
 
 // ---------- admin / monitoring ----------

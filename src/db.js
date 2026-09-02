@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS competitions (
   code TEXT UNIQUE NOT NULL, name TEXT NOT NULL,
   country_id INTEGER REFERENCES countries(id),
   external_ids TEXT DEFAULT '{}',
-  historical_from TEXT, historical_to TEXT
+  historical_from TEXT, historical_to TEXT,
+  logo_url TEXT
 );
 CREATE TABLE IF NOT EXISTS seasons (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -255,6 +256,36 @@ CREATE TABLE IF NOT EXISTS discovered_leagues (
   events_found INTEGER DEFAULT 0,
   checked_at TEXT, last_synced TEXT
 );
+-- SÉLECTIONS DU JOUR (Expert + Combiné Safe) : immuables une fois verrouillées
+CREATE TABLE IF NOT EXISTS daily_selections (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  day TEXT NOT NULL,               -- YYYY-MM-DD (UTC)
+  type TEXT NOT NULL,              -- EXPERT | SAFE_COMBO
+  status TEXT DEFAULT 'OPEN',      -- OPEN | LOCKED | WON | LOST | VOID
+  legs_json TEXT NOT NULL,         -- [{fixture_id, prediction_id, market, selection, probability, odds}]
+  combined_odds REAL, combined_probability REAL,
+  created_at TEXT, locked_at TEXT, settled_at TEXT,
+  data_tag TEXT DEFAULT 'MODEL ESTIMATE',
+  UNIQUE(day, type)
+);
+-- COMPTE RENDU POST-MATCH : pourquoi le pronostic a (ou n'a pas) été validé
+CREATE TABLE IF NOT EXISTS prediction_reviews (
+  fixture_id INTEGER PRIMARY KEY REFERENCES fixtures(id),
+  created_at TEXT,
+  verdict TEXT,                    -- VALIDATED | NOT_VALIDATED | MIXED | NO_PICK
+  summary TEXT,                    -- compte rendu factuel en français
+  factors_json TEXT,               -- facteurs observés, chacun avec provenance
+  research_sources TEXT            -- sources consultées pour ce compte rendu
+);
+-- LEÇONS DU MODÈLE : conclusions calculées sur les résultats réels (jamais inventées)
+CREATE TABLE IF NOT EXISTS model_lessons (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  computed_at TEXT, period TEXT,   -- ex. 2026-W36
+  scope TEXT,                      -- GLOBAL | market:<code> | bucket:<p>
+  observation TEXT,                -- constat chiffré
+  sample_size INTEGER,
+  adjustment TEXT                  -- action appliquée (ou 'AUCUNE — échantillon insuffisant')
+);
 CREATE TABLE IF NOT EXISTS kv (
   key TEXT PRIMARY KEY, value TEXT
 );
@@ -274,6 +305,9 @@ CREATE TABLE IF NOT EXISTS data_conflicts (
   resolution_rule TEXT
 );
 `);
+// Migration douce : colonnes ajoutées après coup (bases existantes)
+try { db.exec(`ALTER TABLE competitions ADD COLUMN logo_url TEXT`); } catch { /* déjà présente */ }
+
 
 export const now = () => new Date().toISOString();
 

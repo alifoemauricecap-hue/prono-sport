@@ -11,6 +11,8 @@ import { generatePrediction, settlePredictions } from '../engine/predictions.js'
 import { updateLivePredictions } from '../engine/live.js';
 import * as espn from '../providers/espn.js';
 import { runDeepResearch } from '../engine/research.js';
+import { ensureDailySelections, lockAndSettleSelections, computeLessons, todayUtc } from '../engine/daily.js';
+import { generatePendingReviews } from '../engine/review.js';
 
 export const liveEvents = { listeners: new Set() };
 export function broadcast(type, payload) {
@@ -204,6 +206,14 @@ async function bootstrapInner() {
   checkpointWal();
   const preds = await generateUpcomingPredictions();
   console.log(`[PRONO SPORT] ${preds} analyses générées pour les matchs à venir.`);
+  // Sélections du jour + jour courant + première passe de logos (ciblée, polie)
+  db.prepare(`INSERT INTO kv (key, value) VALUES ('current_day', ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(todayUtc());
+  ensureDailySelections();
+  try {
+    await tsdb.backfillCompetitionLogos(8);
+    await tsdb.backfillTeamBadges(10);
+  } catch { /* repris par le worker logoBackfill */ }
   checkpointWal();
   // Découverte autonome DIFFÉRÉE (75 s après le boot : priorité aux données
   // critiques, respect du rate limit de la source de découverte)
@@ -252,6 +262,43 @@ export function startScheduler() {
     const r = await runDeepResearch();
     if (r?.regenerated) broadcast('research', { gaps: r.gaps, regenerated: r.regenerated });
   }, 15 * 60 * 1000, 'deepResearch');
+  // SÉLECTIONS DU JOUR : Expert + Combiné Safe (création/verrouillage/règlement)
+  schedule(async () => {
+    ensureDailySelections();
+    const r = lockAndSettleSelections();
+    if (r.settled) broadcast('selections', r);
+  }, 10 * 60 * 1000, 'dailySelections');
+  // COMPTES RENDUS POST-MATCH : recherche ciblée + rédaction factuelle
+  schedule(async () => {
+    const n = await runJob('postMatchReviews', null, () => generatePendingReviews());
+    if (n) broadcast('reviews', { created: n });
+  }, 10 * 60 * 1000, 'postMatchReviews');
+  // LOGOS : équipes des matchs des 72 h + compétitions — recherche ciblée polie
+  schedule(async () => {
+    await runJob('logoBackfill', 'thesportsdb', async () => {
+      const a = await tsdb.backfillTeamBadges(15);
+      const b = await tsdb.backfillCompetitionLogos(8);
+      return a.found + b.found;
+    });
+  }, 60 * 60 * 1000, 'logoBackfill');
+  // BASCULE DE JOUR : au changement de date UTC, rafraîchir les matchs du
+  // nouveau jour, relancer recherches + analyses + sélections + leçons
+  schedule(async () => {
+    const day = todayUtc();
+    const prev = db.prepare(`SELECT value FROM kv WHERE key='current_day'`).get()?.value;
+    if (prev === day) return;
+    db.prepare(`INSERT INTO kv (key, value) VALUES ('current_day', ?)
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value`).run(day);
+    if (!prev) return; // premier boot : bootstrap s'en charge
+    console.log(`[PRONO SPORT] Nouveau jour ${day} : synchro + analyses des matchs du jour…`);
+    await syncFixtures();
+    await runJob('syncEspnToday', 'espn', () => espn.syncEspnToday());
+    await runDeepResearch();
+    await generateUpcomingPredictions();
+    ensureDailySelections(day);
+    computeLessons(); // leçons recalculées chaque jour sur les résultats réels
+    broadcast('newday', { day });
+  }, 5 * 60 * 1000, 'dayRollover');
   // RATTRAPAGE AUTONOME : si le chargement initial a été gêné par la source
   // (rate limit hébergeur), on complète progressivement — jamais de données
   // manquantes définitives tant que la source redevient joignable.

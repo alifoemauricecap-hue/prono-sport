@@ -101,3 +101,26 @@ permet de les brancher sans toucher aux moteurs.
 Si après recherche les données restent introuvables, l'application affiche
 toujours l'état honnête « données insuffisantes » — la recherche élargit la
 couverture, elle n'invente rien.
+
+## v3.2 — Sélections du jour, suivi post-match, logos
+
+- **Marché jamais par défaut** : tous les marchés cotés (1X2, double chance,
+  plus/moins 2,5, BTTS) sont analysés ; seul le meilleur passe (§44) ou
+  NO QUALIFIED PICK — inchangé, désormais visible sur chaque ligne match.
+- **Pronostic Expert du jour** : pronostics ≥ 62 % de probabilité calibrée,
+  % individuel + % global. **Combiné Safe du jour** : cote totale 2,5-3,6
+  (~3), probabilité combinée maximale (produit des probabilités — MODEL
+  ESTIMATE, hypothèse d'indépendance affichée). Les deux sont VERROUILLÉS au
+  premier coup d'envoi puis réglés sur les scores réels.
+- **Suivi post-match** : chaque match pronostiqué reçoit un compte rendu
+  factuel (validé/non validé + faits de jeu recherchés via le résumé officiel
+  ESPN, OpenLigaDB, stats source, météo). Rien d'observable = dit absent.
+- **Bilans** : quotidien (validés/perdus/en cours) et hebdomadaire (par
+  marché, unités) + **leçons du modèle** : calibration mesurée sur les
+  résultats réels ; facteur de prudence appliqué UNIQUEMENT si un biais est
+  prouvé (n ≥ 30), borné [0,85 ; 1].
+- **Logos** : équipes (ESPN/TheSportsDB, recherche ciblée pour les matchs des
+  72 h) et compétitions (logos officiels ESPN + TheSportsDB). Aucun logo
+  deviné : correspondance stricte nom+pays, sinon initiale.
+- **Bascule de jour** : au changement de date UTC, synchro + recherches +
+  analyses des matchs du nouveau jour, sans mélange entre jours.

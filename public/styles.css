@@ -175,3 +175,14 @@ tr:hover td { background: rgba(255,255,255,.02); }
   .match-row { grid-template-columns: 30px 1fr auto 1fr 30px; }
   .mc-team img { width: 48px; height: 48px; }
 }
+
+/* ---- v3.2 : sélections du jour, suivi, logos ---- */
+.day-tabs { display:flex; gap:8px; overflow-x:auto; margin-bottom:12px; padding-bottom:4px; }
+.day-tabs button { background:var(--card2); color:var(--text); border:1px solid var(--border);
+  padding:8px 14px; border-radius:20px; cursor:pointer; white-space:nowrap; font-size:13px; }
+.day-tabs button.active { background:var(--accent); color:#fff; border-color:var(--accent); }
+.pick-pill { background:var(--card2); border:1px solid var(--border); border-radius:12px;
+  padding:2px 8px; font-size:11px; }
+.pick-pill.win { border-color:#2e7d32; color:#66bb6a; }
+.pick-pill.loss { border-color:#c62828; color:#ef5350; }
+.comp-logo { width:16px; height:16px; object-fit:contain; vertical-align:-3px; margin-right:4px; }
