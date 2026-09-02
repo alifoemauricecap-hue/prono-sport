@@ -68,7 +68,7 @@ export function walkForwardBacktest(matches, { testFraction = 0.3, minTrain = 12
         const mkDc = marketsFromMatrix(scoreMatrix(eg.lambdaHome, eg.lambdaAway, rho))['1X2'];
         dcP = { home: mkDc.HOME, draw: mkDc.DRAW, away: mkDc.AWAY };
       }
-      if (poisP && dcP) records.push({ eloP, poisP, dcP, outcome: outcomeOf(m) });
+      if (poisP && dcP) records.push({ id: m.id, ts: m.ts, eloP, poisP, dcP, outcome: outcomeOf(m) });
     }
     if (m.hg === m.ag) drawCount++;
     updateElo(ratings, m.homeKey, m.awayKey, m.hg, m.ag);
@@ -117,11 +117,59 @@ export function walkForwardBacktest(matches, { testFraction = 0.3, minTrain = 12
     observed: b3.n ? b3.hits / b3.n : null,
   }));
 
+  // 🧪 Backtest de la stratégie value sur COTES RÉELLES historiques (v3.6) :
+  // pour chaque match de test, si p(ensemble)×meilleure cote − 1 ≥ minEdge,
+  // mise simulée de 1 unité sur la sélection au meilleur edge. Aucun lookahead :
+  // les probabilités viennent du walk-forward ci-dessus, les cotes de la base.
+  let value = null;
+  try {
+    const oddsStmt = db.prepare(`SELECT selection, MAX(price) AS price FROM odds
+        WHERE fixture_id=? AND market_code='1X2' GROUP BY selection`);
+    const minEdge = CONFIG.value.minEdge;
+    const seasonOf = (ts) => {
+      const d = new Date(ts); const y = d.getUTCFullYear();
+      const s = d.getUTCMonth() >= 6 ? y : y - 1;
+      return `${s}/${String(s + 1).slice(2)}`;
+    };
+    const bySeason = new Map();
+    let bets = 0, profit = 0, wins = 0;
+    for (const r of records) {
+      const prices = {};
+      for (const o of oddsStmt.all(r.id)) prices[o.selection] = o.price;
+      if (!prices.HOME || !prices.DRAW || !prices.AWAY) continue;
+      const p = blend([r.eloP, r.poisP, r.dcP], best.w);
+      const cand = [['HOME', p.home], ['DRAW', p.draw], ['AWAY', p.away]]
+        .map(([sel, pr]) => ({ sel, price: prices[sel], edge: pr * prices[sel] - 1 }))
+        .filter((c) => c.edge >= minEdge)
+        .sort((x, y) => y.edge - x.edge)[0];
+      if (!cand) continue;
+      const won = r.outcome === cand.sel;
+      const pnl = won ? cand.price - 1 : -1;
+      bets++; profit += pnl; if (won) wins++;
+      const key = seasonOf(r.ts);
+      const s = bySeason.get(key) || { season: key, bets: 0, profit: 0, wins: 0 };
+      s.bets++; s.profit += pnl; if (won) s.wins++;
+      bySeason.set(key, s);
+    }
+    if (bets >= 10) {
+      const r2 = (x) => Math.round(x * 100) / 100;
+      value = {
+        min_edge: minEdge, bets, wins,
+        hit_rate: Math.round((wins / bets) * 10000) / 10000,
+        profit: r2(profit), roi: Math.round((profit / bets) * 10000) / 10000,
+        by_season: [...bySeason.values()].sort((a, b) => a.season.localeCompare(b.season))
+          .map((s) => ({ season: s.season, bets: s.bets, wins: s.wins,
+            profit: r2(s.profit), roi: Math.round((s.profit / s.bets) * 10000) / 10000 })),
+      };
+    }
+  } catch { /* cotes historiques absentes pour cette compétition : pas de backtest value */ }
+
   return {
     nTest: records.length,
     models: { elo: mElo, poisson: mPois, dixonColes: mDc },
     ensemble: { weights: { elo: best.w[0], poisson: best.w[1], dixonColes: best.w[2] }, logloss: best.ll, brier: ensB / records.length },
     calibration,
+    value,
   };
 }
 

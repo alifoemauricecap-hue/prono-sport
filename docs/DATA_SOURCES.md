@@ -170,3 +170,14 @@ couverture, elle n'invente rien.
 | 🧾 Archives Expert/Combiné (`/api/selections/history`) | Table `daily_selections` : sélections immuables (§34) avec legs, statut réglé et bilan réel | SOURCE + CALCULATED DATA |
 | 🏆 Classements enrichis | `form5` calculée depuis les résultats réels de la saison ; zones colorées **indicatives** (top 4 / 3 derniers), non présentées comme officielles | CALCULATED DATA |
 | ⏰ Compte à rebours / 📤 partage | Heure de coup d'envoi (SOURCE DATA) ; partage via l'API Web Share du navigateur, aucun envoi serveur | SOURCE DATA |
+
+## v3.6 — Backtest public, calibration, scores exacts, Elo, exports
+
+| Fonction | Source des données | Tag |
+|---|---|---|
+| 🧪 Backtest value (`/api/backtest`) | Walk-forward strict par compétition (chaque match de test prédit uniquement avec les matchs antérieurs) ; ROI simulé à mise fixe 1 u. sur les **meilleures cotes réelles historiques** en base (football-data.co.uk : Bet365, Pinnacle, Max…) ; ventilation saison par saison | CALCULATED DATA |
+| 📉 Calibration + Brier | Bins de calibration et score de Brier issus du même walk-forward, agrégés toutes compétitions pondérés par le nombre de matchs ; persistés dans `model_versions` à chaque entraînement | CALCULATED DATA |
+| 🎯 Scores exacts (`/api/fixtures/:id/scorelines`) | Matrice de Poisson construite sur les buts attendus (λ) réellement stockés par le modèle (`model_outputs`) — jamais de score « au doigt mouillé » | MODEL ESTIMATE |
+| 📈 Trajectoire Elo (`/api/teams/:id/elo-history`) | Elo **rejoué chronologiquement** sur les résultats réels de la compétition principale de l'équipe, même moteur qu'en production | CALCULATED DATA |
+| 📥 Exports CSV (`/api/export/predictions.csv`, `/api/export/transparency.csv`) | Extraction directe des tables `predictions`/`fixtures` (UTF-8 BOM, séparateur « ; ») — vérifiabilité externe totale | SOURCE + CALCULATED DATA |
+| 🌓 Thème clair/sombre | Préférence stockée en localStorage (`ps_theme`), aucun envoi serveur | — |

@@ -14,7 +14,7 @@ import { fetchMatchWeather, geocode } from '../providers/openMeteo.js';
 import { getLiveHistory } from '../engine/live.js';
 import { teamProfile, computeStandings } from '../engine/context.js';
 import { dailyStats, weeklyStats, getDailySelection, getLessons, todayUtc, ensureDailySelections, sameRealMatch } from '../engine/daily.js';
-import { goldenPicks, transparencyReport, headToHead, teamForm, modelVsMarket, calendarCounts, explainPick, selectionsHistory } from '../engine/insights.js';
+import { goldenPicks, transparencyReport, headToHead, teamForm, modelVsMarket, calendarCounts, explainPick, selectionsHistory, scorelines, eloHistory, backtestReport } from '../engine/insights.js';
 
 export const api = express.Router();
 
@@ -479,6 +479,70 @@ api.get('/selections/history', (req, res) => {
   const type = ['EXPERT', 'SAFE_COMBO'].includes(req.query.type) ? req.query.type : null;
   res.json({ data: selectionsHistory(type, Math.min(parseInt(req.query.limit, 10) || 30, 90)) });
 });
+
+/* ==================== v3.6 ==================== */
+
+// 🎯 Scores exacts les plus probables (matrice de Poisson du modèle)
+api.get('/fixtures/:id/scorelines', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
+  const s = scorelines(id, 6);
+  res.json({ data: s, note: s ? null : 'Pas encore de sortie de modèle pour ce match — état honnête.' });
+});
+
+// 📈 Trajectoire Elo d'une équipe (rejouée sur résultats réels)
+api.get('/teams/:id/elo-history', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
+  const h = eloHistory(id, Math.min(parseInt(req.query.points, 10) || 40, 100));
+  res.json({ data: h, note: h ? null : 'Aucun match terminé en base pour cette équipe.' });
+});
+
+// 🧪 Backtest walk-forward + calibration + ROI value sur cotes réelles
+api.get('/backtest', (req, res) => {
+  res.json({ data: backtestReport() });
+});
+
+// 📥 Exports CSV (UTF-8 BOM, séparateur ; — compatible Excel FR)
+const csvCell = (v) => {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[;"\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+};
+const sendCsv = (res, filename, header, rows) => {
+  const body = '\ufeff' + [header, ...rows].map((r) => r.map(csvCell).join(';')).join('\r\n');
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(body);
+};
+
+api.get('/export/predictions.csv', (req, res) => {
+  const rows = db.prepare(`SELECT f.kickoff_utc, c.name AS comp, ht.name AS home, at2.name AS away,
+      p.market, p.selection, p.probability, p.market_probability, p.odds, p.decision, p.result, p.created_at
+      FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
+      JOIN competitions c ON c.id=f.competition_id
+      JOIN teams ht ON ht.id=f.home_team_id JOIN teams at2 ON at2.id=f.away_team_id
+      WHERE p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')
+      ORDER BY f.kickoff_utc DESC LIMIT 5000`).all();
+  sendCsv(res, 'pronostics.csv',
+    ['coup_envoi_utc', 'competition', 'domicile', 'exterieur', 'marche', 'selection', 'probabilite', 'prob_marche', 'cote', 'decision', 'resultat', 'cree_le'],
+    rows.map((r) => [r.kickoff_utc, r.comp, r.home, r.away, r.market, r.selection, r.probability, r.market_probability, r.odds, r.decision, r.result, r.created_at]));
+});
+
+api.get('/export/transparency.csv', (req, res) => {
+  const rows = db.prepare(`SELECT f.kickoff_utc, c.name AS comp, ht.name AS home, at2.name AS away,
+      f.home_score, f.away_score, p.market, p.selection, p.probability, p.odds, p.decision, p.result
+      FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
+      JOIN competitions c ON c.id=f.competition_id
+      JOIN teams ht ON ht.id=f.home_team_id JOIN teams at2 ON at2.id=f.away_team_id
+      WHERE p.result IN ('WIN','LOSS') AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')
+      ORDER BY f.kickoff_utc DESC LIMIT 5000`).all();
+  sendCsv(res, 'transparence.csv',
+    ['coup_envoi_utc', 'competition', 'domicile', 'exterieur', 'score', 'marche', 'selection', 'probabilite', 'cote', 'decision', 'resultat', 'pnl_1u'],
+    rows.map((r) => [r.kickoff_utc, r.comp, r.home, r.away, `${r.home_score}-${r.away_score}`, r.market, r.selection, r.probability, r.odds, r.decision, r.result,
+      r.result === 'WIN' ? (r.odds ? Math.round((r.odds - 1) * 100) / 100 : '') : -1]));
+});
+
 
 // Statut de pronostics par ids (suivi de bankroll virtuelle côté client)
 api.get('/predictions/status', (req, res) => {

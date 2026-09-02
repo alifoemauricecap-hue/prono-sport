@@ -211,3 +211,16 @@ tr.zone-bottom td:first-child{box-shadow:inset 3px 0 0 #d64545}
 @media(max-width:820px){.grid-2{grid-template-columns:1fr}}
 .mvm-table td,.mvm-table th{white-space:nowrap}
 .cal-tab-count{display:block;font-size:10px;color:var(--muted);font-weight:400}
+
+/* ============ v3.6 : thème clair ============ */
+html[data-theme="light"] {
+  --bg: #f2f5fa; --bg2: #e8edf5; --card: #ffffff; --card2: #eef2f8;
+  --border: #d4dcea; --text: #1a2333; --muted: #5b6a85;
+  --accent: #16a34a; --accent2: #15803d; --gold: #b45309; --red: #dc2626;
+  --blue: #2563eb; --purple: #7c3aed;
+  --ok: #16a34a; --loss: #dc2626;
+}
+html[data-theme="light"] body { background: var(--bg); color: var(--text); }
+html[data-theme="light"] .topbar { background: linear-gradient(180deg, #ffffff, #eef2f8); border-bottom: 1px solid var(--border); }
+html[data-theme="light"] .pill.countdown { background: rgba(37,99,235,.08); }
+html[data-theme="light"] .form-chip.d { background: #94a3b8; }

@@ -339,6 +339,8 @@ CREATE TABLE IF NOT EXISTS data_conflicts (
 `);
 // Migration douce : colonnes ajoutées après coup (bases existantes)
 try { db.exec(`ALTER TABLE competitions ADD COLUMN logo_url TEXT`); } catch { /* déjà présente */ }
+try { db.exec(`ALTER TABLE model_versions ADD COLUMN calibration_json TEXT`); } catch { /* déjà présente */ }
+try { db.exec(`ALTER TABLE model_versions ADD COLUMN value_json TEXT`); } catch { /* déjà présente */ }
 
 
 export const now = () => new Date().toISOString();

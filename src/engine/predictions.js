@@ -17,16 +17,19 @@ export function getCompetitionModel(competitionId, force = false) {
   modelCache.set(competitionId, { model, trainedAt: Date.now() });
   if (model?.backtest) {
     db.prepare(`INSERT INTO model_versions (version, description, trained_at, training_matches,
-        backtest_brier, backtest_logloss, weights)
-        VALUES (?,?,?,?,?,?,?)
+        backtest_brier, backtest_logloss, weights, calibration_json, value_json)
+        VALUES (?,?,?,?,?,?,?,?,?)
         ON CONFLICT(version) DO UPDATE SET trained_at=excluded.trained_at,
         training_matches=excluded.training_matches, backtest_brier=excluded.backtest_brier,
-        backtest_logloss=excluded.backtest_logloss, weights=excluded.weights`)
+        backtest_logloss=excluded.backtest_logloss, weights=excluded.weights,
+        calibration_json=excluded.calibration_json, value_json=excluded.value_json`)
       .run(`${CONFIG.modelVersion}-comp${competitionId}`,
         'Ensemble Elo + Poisson + Dixon-Coles, poids validés par walk-forward',
         now(), model.matches,
         model.backtest.ensemble.brier, model.backtest.ensemble.logloss,
-        JSON.stringify(model.backtest.ensemble.weights));
+        JSON.stringify(model.backtest.ensemble.weights),
+        JSON.stringify(model.backtest.calibration || null),
+        JSON.stringify(model.backtest.value || null));
   }
   return model;
 }

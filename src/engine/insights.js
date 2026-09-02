@@ -6,6 +6,9 @@
 //    probabilité — CALCULATED DATA, uniquement sur résultats réels réglés.
 import { db } from '../db.js';
 import { getCalibrationShrink, sameRealMatch } from './daily.js';
+import { scoreMatrix } from './poisson.js';
+import { ELO_START, updateElo } from './elo.js';
+import { CONFIG } from '../config.js';
 
 const round2 = (x) => Math.round(x * 100) / 100;
 const round4 = (x) => Math.round(x * 10000) / 10000;
@@ -275,4 +278,111 @@ export function selectionsHistory(type = null, limit = 30) {
     combined_odds: r.combined_odds, combined_probability: r.combined_probability,
     legs: JSON.parse(r.legs_json || '[]'),
   }));
+}
+
+/* ==================== v3.6 ==================== */
+
+/** 🎯 Scores exacts les plus probables — matrice de Poisson issue des lambdas
+ *  RÉELLEMENT calculés par le modèle pour ce match (model_outputs).
+ *  MODEL ESTIMATE : aucune invention, la matrice découle des forces ajustées. */
+export function scorelines(fixtureId, top = 6) {
+  const mo = db.prepare(`SELECT lambda_home, lambda_away, model_name, computed_at
+      FROM model_outputs WHERE fixture_id=? AND lambda_home IS NOT NULL
+      ORDER BY computed_at DESC LIMIT 1`).get(fixtureId);
+  if (!mo) return null;
+  const M = scoreMatrix(mo.lambda_home, mo.lambda_away, 0);
+  const list = [];
+  for (let h = 0; h < M.length; h++) for (let a = 0; a < M[h].length; a++) {
+    list.push({ score: `${h}-${a}`, home: h, away: a, p: M[h][a] });
+  }
+  list.sort((x, y) => y.p - x.p);
+  const kept = list.slice(0, top).map((s) => ({ ...s, p: round4(s.p) }));
+  const covered = kept.reduce((acc, s) => acc + s.p, 0);
+  return {
+    lambdas: { home: round2(mo.lambda_home), away: round2(mo.lambda_away) },
+    model: mo.model_name, computed_at: mo.computed_at,
+    scores: kept,
+    others_p: round4(Math.max(0, 1 - covered)),
+    tag: 'MODEL ESTIMATE — matrice de Poisson sur les buts attendus du modèle.',
+  };
+}
+
+/** 📈 Trajectoire Elo d'une équipe : rejoue chronologiquement les matchs réels
+ *  de sa compétition principale avec le même moteur Elo que la production. */
+export function eloHistory(teamId, points = 40) {
+  const comp = db.prepare(`SELECT competition_id AS id, COUNT(*) AS n FROM fixtures
+      WHERE (home_team_id=? OR away_team_id=?) AND status='FINISHED' AND home_score IS NOT NULL
+      GROUP BY competition_id ORDER BY n DESC LIMIT 1`).get(teamId, teamId);
+  if (!comp) return null;
+  const matches = db.prepare(`SELECT home_team_id AS h, away_team_id AS a,
+      home_score AS hs, away_score AS as2, kickoff_utc AS ts FROM fixtures
+      WHERE competition_id=? AND status='FINISHED' AND home_score IS NOT NULL
+      ORDER BY kickoff_utc ASC`).all(comp.id);
+  const ratings = new Map();
+  const hist = [];
+  for (const m of matches) {
+    updateElo(ratings, m.h, m.a, m.hs, m.as2);
+    if (m.h === teamId || m.a === teamId) {
+      hist.push({ day: m.ts.slice(0, 10), rating: Math.round(ratings.get(teamId) ?? ELO_START) });
+    }
+  }
+  const compName = db.prepare(`SELECT name FROM competitions WHERE id=?`).get(comp.id)?.name || null;
+  return {
+    competition: compName, total_matches: hist.length,
+    current: hist.length ? hist[hist.length - 1].rating : ELO_START,
+    points: hist.slice(-points),
+    tag: 'CALCULATED DATA — Elo rejoué sur les résultats réels de la compétition.',
+  };
+}
+
+/** 🧪 Rapport de backtest : métriques walk-forward persistées à l'entraînement
+ *  (Brier, log-loss, poids, calibration, ROI value sur cotes réelles). */
+export function backtestReport() {
+  const rows = db.prepare(`SELECT * FROM model_versions WHERE version LIKE ?
+      ORDER BY training_matches DESC`).all(`${CONFIG.modelVersion}-comp%`);
+  const parsed = rows.map((r) => {
+    const compId = parseInt((r.version.match(/-comp(\d+)$/) || [])[1], 10);
+    const comp = Number.isFinite(compId)
+      ? db.prepare(`SELECT name, code FROM competitions WHERE id=?`).get(compId) : null;
+    if (!comp) return null;
+    const j = (s) => { try { return JSON.parse(s); } catch { return null; } };
+    return {
+      competition: comp.name, code: comp.code, trained_at: r.trained_at,
+      matches: r.training_matches, brier: r.backtest_brier, logloss: r.backtest_logloss,
+      weights: j(r.weights), calibration: j(r.calibration_json), value: j(r.value_json),
+    };
+  }).filter(Boolean);
+
+  // Calibration globale : agrégation pondérée des bins de toutes les compétitions
+  const bins = Array.from({ length: 10 }, (_, i) => ({ bin: `${i * 10}-${(i + 1) * 10}%`, n: 0, pSum: 0, oSum: 0 }));
+  for (const c of parsed) {
+    (c.calibration || []).forEach((b, i) => {
+      if (b && b.n) { bins[i].n += b.n; bins[i].pSum += b.predicted * b.n; bins[i].oSum += b.observed * b.n; }
+    });
+  }
+  const calibration = bins.map((b) => ({
+    bin: b.bin, n: b.n,
+    predicted: b.n ? round4(b.pSum / b.n) : null,
+    observed: b.n ? round4(b.oSum / b.n) : null,
+  }));
+  let brierN = 0, brierSum = 0;
+  for (const c of parsed) if (c.brier != null && c.matches) { brierN += c.matches; brierSum += c.brier * c.matches; }
+
+  // Value global : somme des backtests par compétition
+  const withValue = parsed.filter((c) => c.value);
+  const global = withValue.length ? {
+    bets: withValue.reduce((a, c) => a + c.value.bets, 0),
+    wins: withValue.reduce((a, c) => a + c.value.wins, 0),
+    profit: round2(withValue.reduce((a, c) => a + c.value.profit, 0)),
+  } : null;
+  if (global) {
+    global.hit_rate = round4(global.wins / global.bets);
+    global.roi = round4(global.profit / global.bets);
+  }
+  return {
+    competitions: parsed, calibration,
+    global_brier: brierN ? round4(brierSum / brierN) : null,
+    value_global: global,
+    method: 'Walk-forward strict : chaque match de test est prédit uniquement avec les matchs antérieurs. ROI value simulé à mise fixe 1 u. sur les meilleures cotes réelles historiques (football-data.co.uk). Un pari est simulé quand p×cote−1 ≥ ' + (CONFIG.value.minEdge * 100).toFixed(0) + ' %.',
+  };
 }

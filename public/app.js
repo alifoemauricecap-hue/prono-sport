@@ -474,13 +474,15 @@ async function loadTab(tab, m) {
   body.innerHTML = '<div class="loading">Chargement…</div>';
   try {
     if (tab === 'apercu') {
-      let mc = null, h2h = [], form = null;
+      let mc = null, h2h = [], form = null, scr = null;
       try { mc = (await api(`/fixtures/${m.id}/matchcenter`)).data; } catch { /* sections absentes */ }
       try { h2h = (await api(`/fixtures/${m.id}/h2h`)).data || []; } catch { /* absent */ }
       try { form = (await api(`/fixtures/${m.id}/form`)).data; } catch { /* absent */ }
+      try { scr = (await api(`/fixtures/${m.id}/scorelines`)).data; } catch { /* absent */ }
       body.innerHTML = `
         ${renderMatchCenter(mc, m)}
         ${form ? renderFormCard(form, m) : ''}
+        ${scr ? renderScorelines(scr, m) : ''}
         ${h2h.length ? `<div class="card"><b>⚔️ Face-à-face — ${h2h.length} dernière(s) confrontation(s) ${tagPill('SOURCE DATA')}</b>
           <div style="margin-top:10px">${h2h.map((g) => `<div class="match-row" onclick="event.stopPropagation();openFixture(${g.id})" style="cursor:pointer">
             <div class="team"><span>${esc(g.home_name)} <b>${g.home_score}-${g.away_score}</b> ${esc(g.away_name)}</span></div>
@@ -779,11 +781,13 @@ document.addEventListener('click', (e) => {
 window.openTeam = async (id) => {
   $('#searchResults').classList.add('hidden');
   app.innerHTML = '<div class="loading">Chargement…</div>';
-  const [t, pr] = await Promise.all([api('/teams/' + id), api('/teams/' + id + '/profile')]);
+  const [t, pr, eh] = await Promise.all([api('/teams/' + id), api('/teams/' + id + '/profile'), api('/teams/' + id + '/elo-history').catch(() => ({ data: null }))]);
   const d = t.data;
   const p = pr.data || {};
+  const elo = eh.data;
   const rec = (r) => r ? `${r.w}V ${r.d}N ${r.l}D · ${r.gf} BP / ${r.ga} BC (${r.played} matchs)` : 'INSUFFICIENT DATA';
   let dossier = '';
+  if (elo?.points?.length > 1) dossier += eloSparkCard(elo);
   if (p.context && !p.context.status) {
     dossier += `<div class="card"><b>Contexte ${tagPill('CALCULATED DATA')}</b>
       <div class="kv" style="margin-top:8px">
@@ -1110,7 +1114,16 @@ async function renderTransparency() {
       <table class="table"><thead><tr><th>Tranche annoncée</th><th>n</th><th>Prévu</th><th>Réel</th><th>Écart</th></tr></thead><tbody>
       ${t.calibration.map((c) => `<tr><td>${c.bucket}</td><td>${c.n}</td><td>${pctOr(c.predicted)}</td><td>${pctOr(c.actual)}</td><td ${roiClass(c.gap)}>${(c.gap >= 0 ? '+' : '') + (c.gap * 100).toFixed(1)} pts</td></tr>`).join('')}
       </tbody></table>
-      <div style="color:var(--muted);font-size:12px;margin-top:6px">Un modèle honnête a des écarts proches de 0 : c'est exactement ce que la calibration automatique corrige chaque jour.</div></div>` : ''}`;
+      <div style="color:var(--muted);font-size:12px;margin-top:6px">Un modèle honnête a des écarts proches de 0 : c'est exactement ce que la calibration automatique corrige chaque jour.</div></div>` : ''}
+    <div class="card"><b>📥 Export des données ${tagPill('SOURCE DATA')}</b>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <a class="fav-btn" style="text-decoration:none" href="/api/export/predictions.csv" download>📥 Tous les pronostics (CSV)</a>
+        <a class="fav-btn" style="text-decoration:none" href="/api/export/transparency.csv" download>📥 Pronostics réglés + P&L (CSV)</a>
+      </div>
+      <div style="color:var(--muted);font-size:11px;margin-top:6px">Vérifiez nos chiffres vous-même : chaque ligne est un pronostic réel horodaté (UTF-8, séparateur « ; », compatible Excel).</div>
+    </div>
+    <div id="btSection"><div class="loading">Chargement du backtest…</div></div>`;
+  backtestSection().then((html) => { const el = document.getElementById('btSection'); if (el) el.innerHTML = html; });
 }
 
 /* ---------------- 💰 BANKROLL VIRTUELLE (v3.4) ---------------- */
@@ -1293,4 +1306,108 @@ function archiveCard(title, rows) {
         </div>`).join('')}
       </details>`).join('')}
   </div>`;
+}
+
+/* ==================== v3.6 ==================== */
+
+/* 🎯 Scores exacts les plus probables */
+function renderScorelines(s, m) {
+  const max = s.scores[0]?.p || 1;
+  return `<div class="card"><b>🎯 Scores exacts les plus probables ${tagPill('MODEL ESTIMATE')}</b>
+    <div style="color:var(--muted);font-size:12px;margin:4px 0 10px">Buts attendus : ${esc(m.home_name)} ${s.lambdas.home} — ${s.lambdas.away} ${esc(m.away_name)} (matrice de Poisson du modèle)</div>
+    ${s.scores.map((x) => `<div style="display:flex;align-items:center;gap:10px;margin-top:6px">
+      <span style="width:44px;font-weight:800">${x.score}</span>
+      <div style="flex:1;height:10px;background:var(--card2);border-radius:5px;overflow:hidden">
+        <div style="width:${(x.p / max * 100).toFixed(1)}%;height:100%;background:${x.home > x.away ? 'var(--accent)' : x.home < x.away ? 'var(--red)' : 'var(--muted)'}"></div>
+      </div>
+      <span style="width:52px;text-align:right;font-size:12.5px">${(x.p * 100).toFixed(1)}%</span>
+    </div>`).join('')}
+    <div style="color:var(--muted);font-size:11px;margin-top:8px">Tous les autres scores : ${(s.others_p * 100).toFixed(1)}% — un score exact reste par nature très incertain.</div>
+  </div>`;
+}
+
+/* 📈 Sparkline Elo (SVG inline, aucune dépendance) */
+function eloSparkCard(elo) {
+  const pts = elo.points;
+  const W = 560, H = 90, PAD = 6;
+  const vals = pts.map((p) => p.rating);
+  const mn = Math.min(...vals), mx = Math.max(...vals);
+  const x = (i) => PAD + i * (W - 2 * PAD) / Math.max(pts.length - 1, 1);
+  const y = (v) => mx === mn ? H / 2 : PAD + (H - 2 * PAD) * (1 - (v - mn) / (mx - mn));
+  const path = pts.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(p.rating).toFixed(1)}`).join(' ');
+  const up = vals[vals.length - 1] >= vals[0];
+  return `<div class="card"><b>📈 Trajectoire Elo — ${esc(elo.competition || '')} ${tagPill('CALCULATED DATA')}</b>
+    <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--muted);margin:4px 0">
+      <span>${esc(pts[0].day)} : ${pts[0].rating}</span>
+      <span style="font-weight:800;color:${up ? 'var(--accent)' : 'var(--red)'}">${up ? '↗' : '↘'} ${elo.current}</span>
+    </div>
+    <svg viewBox="0 0 ${W} ${H}" style="width:100%;height:auto" preserveAspectRatio="none" role="img" aria-label="Courbe Elo">
+      <path d="${path}" fill="none" stroke="${up ? '#22c55e' : '#ef4444'}" stroke-width="2"/>
+    </svg>
+    <div style="font-size:11px;color:var(--muted)">Elo rejoué sur les ${elo.total_matches} matchs réels de la compétition (min ${mn} · max ${mx}).</div>
+  </div>`;
+}
+
+/* 🌓 Thème clair / sombre */
+(function initTheme() {
+  const saved = localStorage.getItem('ps_theme');
+  if (saved === 'light') document.documentElement.dataset.theme = 'light';
+  const btn = document.getElementById('themeBtn');
+  if (btn) {
+    const paint = () => { btn.textContent = document.documentElement.dataset.theme === 'light' ? '🌙' : '☀️'; };
+    paint();
+    btn.addEventListener('click', () => {
+      const light = document.documentElement.dataset.theme === 'light';
+      if (light) delete document.documentElement.dataset.theme;
+      else document.documentElement.dataset.theme = 'light';
+      localStorage.setItem('ps_theme', light ? 'dark' : 'light');
+      paint();
+    });
+  }
+})();
+
+/* 🧪 Section backtest + calibration (injectée dans la vue Transparence) */
+async function backtestSection() {
+  try {
+    const b = (await api('/backtest')).data;
+    if (!b || !b.competitions.length) {
+      return '<div class="card"><b>🧪 Backtest</b><div class="info" style="margin-top:8px">Les métriques de backtest apparaîtront après le premier entraînement des modèles (automatique au démarrage).</div></div>';
+    }
+    const v = b.value_global;
+    const withValue = b.competitions.filter((c) => c.value);
+    const cal = b.calibration.filter((c) => c.n > 0);
+    const maxN = Math.max(...cal.map((c) => c.n), 1);
+    return `
+    <div class="card"><b>🧪 Backtest walk-forward ${tagPill('CALCULATED DATA')}</b>
+      <div style="color:var(--muted);font-size:12px;margin:6px 0">${esc(b.method)}</div>
+      ${v ? `<div class="prob-row" style="margin-top:8px">
+        <div class="prob-box"><div class="v">${v.bets}</div><div class="l">paris simulés (cotes réelles)</div></div>
+        <div class="prob-box"><div class="v">${(v.hit_rate * 100).toFixed(1)}%</div><div class="l">réussite</div></div>
+        <div class="prob-box"><div class="v" style="color:${v.roi >= 0 ? 'var(--ok)' : 'var(--loss)'}">${v.roi >= 0 ? '+' : ''}${(v.roi * 100).toFixed(1)}%</div><div class="l">ROI par pari</div></div>
+        <div class="prob-box"><div class="v" style="color:${v.profit >= 0 ? 'var(--ok)' : 'var(--loss)'}">${v.profit >= 0 ? '+' : ''}${v.profit}</div><div class="l">unités (mise 1 u.)</div></div>
+      </div>` : '<div class="info" style="margin-top:8px">Pas encore de backtest value : cotes historiques absentes pour les compétitions entraînées.</div>'}
+      ${withValue.length ? `<div class="table-wrap" style="margin-top:10px"><table>
+        <tr><th>Compétition</th><th class="num">Test</th><th class="num">Brier</th><th class="num">Paris</th><th class="num">Réussite</th><th class="num">ROI</th></tr>
+        ${withValue.slice(0, 15).map((c) => `<tr><td>${esc(c.competition)}</td><td class="num">${c.matches}</td><td class="num">${c.brier?.toFixed(4) ?? '—'}</td>
+          <td class="num">${c.value.bets}</td><td class="num">${((c.value.wins / c.value.bets) * 100).toFixed(0)}%</td>
+          <td class="num" style="color:${c.value.roi >= 0 ? 'var(--ok)' : 'var(--loss)'}">${c.value.roi >= 0 ? '+' : ''}${(c.value.roi * 100).toFixed(1)}%</td></tr>`).join('')}
+      </table></div>` : ''}
+      ${withValue.some((c) => c.value.by_season?.length > 1) ? `<details style="margin-top:8px"><summary style="cursor:pointer;font-size:13px">Détail saison par saison</summary>
+        ${withValue.filter((c) => c.value.by_season?.length).slice(0, 10).map((c) => `<div style="margin-top:8px"><b style="font-size:12.5px">${esc(c.competition)}</b>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px">${c.value.by_season.map((s) => `<span class="pill countdown" title="${s.bets} paris">${esc(s.season)} : <b style="color:${s.roi >= 0 ? 'var(--ok)' : 'var(--loss)'}">${s.roi >= 0 ? '+' : ''}${(s.roi * 100).toFixed(0)}%</b></span>`).join('')}</div>
+        </div>`).join('')}</details>` : ''}
+    </div>
+    <div class="card"><b>📉 Calibration du modèle ${tagPill('CALCULATED DATA')} ${b.global_brier != null ? `· Brier global <b>${b.global_brier.toFixed(4)}</b>` : ''}</b>
+      <div style="color:var(--muted);font-size:12px;margin:6px 0">Quand le modèle annonce X %, gagne-t-il vraiment X % du temps ? Barres = observé réel, trait = annoncé (backtest walk-forward, ${cal.reduce((a, c) => a + c.n, 0)} probabilités testées).</div>
+      <div style="display:flex;gap:4px;align-items:flex-end;height:110px;margin-top:10px">
+        ${cal.map((c) => `<div style="flex:1;text-align:center" title="${c.bin} : annoncé ${(c.predicted * 100).toFixed(1)}%, observé ${(c.observed * 100).toFixed(1)}% (n=${c.n})">
+          <div style="position:relative;height:80px;display:flex;align-items:flex-end">
+            <div style="width:100%;height:${(c.observed * 80).toFixed(0)}px;background:var(--blue);border-radius:3px 3px 0 0;opacity:${0.45 + 0.55 * c.n / maxN}"></div>
+            <div style="position:absolute;left:0;right:0;bottom:${(c.predicted * 80).toFixed(0)}px;border-top:2px dashed var(--gold)"></div>
+          </div>
+          <div style="font-size:9px;color:var(--muted);margin-top:3px">${c.bin.replace('%', '')}</div>
+        </div>`).join('')}
+      </div>
+    </div>`;
+  } catch { return ''; }
 }
