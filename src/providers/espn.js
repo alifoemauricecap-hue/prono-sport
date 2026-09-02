@@ -10,7 +10,7 @@ import { fetchJson } from '../util/http.js';
 import { CONFIG } from '../config.js';
 import { db } from '../db.js';
 import { normalizeTeamName } from '../util/teamNames.js';
-import { upsertCompetition, upsertTeam, upsertVenue, upsertFixture } from './repository.js';
+import { upsertCompetition, upsertTeam, upsertVenue, upsertFixture, saveOdds } from './repository.js';
 
 const SOURCE_ID = 'espn';
 const BASE = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
@@ -154,6 +154,119 @@ export async function fetchEventSummary(compCode, espnEventId) {
   })).filter((e) => e.text);
   return { keyEvents };
 }
+
+/** Cote américaine (moneyline) → cote décimale européenne. */
+export function americanToDecimal(ml) {
+  const v = Number(ml);
+  if (!Number.isFinite(v) || v === 0) return null;
+  return Math.round((v > 0 ? 1 + v / 100 : 1 + 100 / Math.abs(v)) * 100) / 100;
+}
+
+const EVENT_ICONS = { goal: '⚽', 'own-goal': '⚽', 'penalty-goal': '⚽', 'yellow-card': '🟨', 'red-card': '🟥', substitution: '🔁', 'penalty-missed': '❌' };
+const STAT_LABELS = {
+  possessionPct: 'Possession (%)', totalShots: 'Tirs', shotsOnTarget: 'Tirs cadrés',
+  wonCorners: 'Corners', foulsCommitted: 'Fautes', offsides: 'Hors-jeu',
+  saves: 'Arrêts', yellowCards: 'Cartons jaunes', redCards: 'Cartons rouges',
+};
+
+/** CENTRE DU MATCH (§v3.3) : compositions, chronologie, stats officielles et
+ *  cotes bookmaker publiées par ESPN (pickcenter) — 100 % SOURCE DATA.
+ *  ttlMs court pour les matchs en cours (suivi en direct). */
+export async function fetchMatchCenter(compCode, espnEventId, ttlMs = 60_000) {
+  const meta = espnComps()[compCode];
+  if (!meta) return null;
+  const { data } = await politeJson(`${BASE}/${meta.espn}/summary?event=${espnEventId}`, ttlMs);
+  if (!data) return null;
+  // Compositions + formation (rosters officiels)
+  const lineups = (data.rosters || []).map((r) => ({
+    home: r.homeAway === 'home',
+    team: r.team?.displayName || null,
+    formation: r.formation || null,
+    starters: (r.roster || []).filter((p) => p.starter).map((p) => ({
+      name: p.athlete?.displayName || null,
+      num: p.jersey || null,
+      pos: p.position?.abbreviation || null,
+    })).filter((p) => p.name),
+    subs: (r.roster || []).filter((p) => !p.starter && p.subbedIn).map((p) => ({
+      name: p.athlete?.displayName || null, num: p.jersey || null,
+    })).filter((p) => p.name),
+  }));
+  // Chronologie du jeu (buts, cartons, remplacements)
+  const timeline = (data.keyEvents || []).map((ev) => ({
+    icon: EVENT_ICONS[ev.type?.type] || '•',
+    kind: ev.type?.text || null,
+    minute: ev.clock?.displayValue || null,
+    team: ev.team?.displayName || null,
+    players: (ev.participants || []).map((p) => p.athlete?.displayName).filter(Boolean),
+    text: ev.text || null,
+  }));
+  // Statistiques officielles (possession, tirs, corners…)
+  const stats = (data.boxscore?.teams || []).map((t) => {
+    const out = { team: t.team?.displayName || null, home: t.homeAway === 'home', values: {} };
+    for (const s of t.statistics || []) {
+      if (STAT_LABELS[s.name]) out.values[STAT_LABELS[s.name]] = s.displayValue ?? null;
+    }
+    return out;
+  });
+  // Cotes bookmaker publiées par ESPN (SOURCE DATA — provider réel)
+  const pc = (data.pickcenter || [])[0] || null;
+  const odds = pc ? {
+    bookmaker: pc.provider?.name || 'ESPN BET',
+    h: americanToDecimal(pc.homeTeamOdds?.moneyLine),
+    d: americanToDecimal(pc.drawOdds?.moneyLine),
+    a: americanToDecimal(pc.awayTeamOdds?.moneyLine),
+    ouLine: pc.overUnder ?? null,
+    over: americanToDecimal(pc.overOdds),
+    under: americanToDecimal(pc.underOdds),
+  } : null;
+  const st = data.header?.competitions?.[0]?.status || null;
+  return {
+    lineups, timeline, stats, odds,
+    clock: st?.displayClock || null,
+    statusDetail: st?.type?.shortDetail || st?.type?.description || null,
+    state: st?.type?.state || null,
+    keyEvents: timeline.map((t) => ({ kind: t.kind, minute: t.minute, text: t.text })), // compat review.js
+  };
+}
+
+/** COTES ESPN pour les matchs à venir sans cotes (déblocage du Value Engine).
+ *  Pour chaque match des prochaines 72 h connu d'ESPN et sans cote 1X2 en base,
+ *  lit le summary (pickcenter) et enregistre les cotes réelles du bookmaker. */
+export async function syncEspnOdds(hoursAhead = 72, limit = 40) {
+  const comps = espnComps();
+  const rows = db.prepare(`SELECT f.id, f.external_ids, c.code
+      FROM fixtures f JOIN competitions c ON c.id=f.competition_id
+      WHERE f.status IN ('SCHEDULED','UPCOMING')
+        AND f.kickoff_utc BETWEEN datetime('now') AND datetime('now', ?)
+        AND NOT EXISTS (SELECT 1 FROM odds o WHERE o.fixture_id=f.id AND o.market_code='1X2'
+                        AND o.retrieved_at > datetime('now','-12 hours'))
+      ORDER BY f.kickoff_utc ASC LIMIT ?`).all(`+${hoursAhead} hours`, limit * 3);
+  let found = 0, scanned = 0;
+  for (const r of rows) {
+    if (scanned >= limit) break;
+    const espnId = safeJson(r.external_ids)?.espn;
+    if (!espnId || !comps[r.code]) continue;
+    scanned++;
+    try {
+      const mc = await fetchMatchCenter(r.code, espnId, 30 * 60_000);
+      if (mc?.odds?.h && mc.odds.d && mc.odds.a) {
+        const book = mc.odds.bookmaker;
+        saveOdds(r.id, book, '1X2', 'HOME', mc.odds.h, SOURCE_ID);
+        saveOdds(r.id, book, '1X2', 'DRAW', mc.odds.d, SOURCE_ID);
+        saveOdds(r.id, book, '1X2', 'AWAY', mc.odds.a, SOURCE_ID);
+        if (mc.odds.ouLine === 2.5 && mc.odds.over && mc.odds.under) {
+          saveOdds(r.id, book, 'OU2.5', 'OVER', mc.odds.over, SOURCE_ID);
+          saveOdds(r.id, book, 'OU2.5', 'UNDER', mc.odds.under, SOURCE_ID);
+        }
+        found++;
+      }
+    } catch { /* match suivant — sources jamais bloquantes */ }
+    await sleep(150); // politesse supplémentaire entre summaries
+  }
+  return { scanned, found };
+}
+
+function safeJson(s) { try { return JSON.parse(s || '{}'); } catch { return {}; } }
 
 /** Suivi du jour, CIBLÉ : uniquement les compétitions ayant un match aujourd'hui
  *  (fenêtre -6h/+18h) — met à jour scores, statuts live et coups d'envoi. */

@@ -124,3 +124,19 @@ couverture, elle n'invente rien.
   deviné : correspondance stricte nom+pays, sinon initiale.
 - **Bascule de jour** : au changement de date UTC, synchro + recherches +
   analyses des matchs du nouveau jour, sans mélange entre jours.
+
+## v3.3 — Cotes ESPN (pickcenter) & Centre du match
+- **Cotes bookmaker via ESPN** (`summary?event=` → `pickcenter`) : moneyline
+  américaine convertie en cote décimale (DraftKings et autres providers ESPN).
+  SOURCE DATA — débloque le Value Engine pour les ligues sans CSV coté
+  (Saudi Pro League, J-League, MLS, Brésil…). Robot `espnOdds` toutes les 20 min.
+- **Centre du match** (`/api/fixtures/:id/matchcenter`) : compositions
+  officielles + formation, chronologie du jeu (buts/cartons/remplacements),
+  statistiques officielles (possession, tirs, corners…), score/horloge live —
+  100 % SOURCE DATA (ESPN). Scores exacts probables : MODEL ESTIMATE.
+- **Pronostic d'analyse** : quand aucune cote n'existe (ou aucune value), le
+  marché le plus probable du modèle calibré (p ≥ 58 %, < 98,5 %) est publié
+  avec sa cote équitable 1/p — décision `ANALYSIS PICK`, jamais présentée
+  comme VALUE BET. Les sections Expert/Combiné affichent la provenance.
+- **Dédoublonnage inter-sources** des sélections du jour : même match réel
+  détecté par équipes (préfixes complets ≥ 5 lettres) + coups d'envoi à ≤ 3 h.

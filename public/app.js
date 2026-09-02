@@ -394,12 +394,83 @@ window.openFixture = async (id) => {
   loadTab('apercu', m);
 };
 
+/* ---------------- CENTRE DU MATCH (§v3.3) : compos, chrono, stats live ---------------- */
+function renderMatchCenter(mc, m) {
+  if (!mc) return '';
+  let html = '';
+  // Score / horloge en direct
+  if (mc.clock && ['LIVE', 'HALFTIME', 'EXTRA_TIME', 'PENALTIES'].includes(mc.status)) {
+    html += `<div class="card" style="text-align:center"><b style="font-size:22px">${mc.home_score ?? '–'} - ${mc.away_score ?? '–'}</b>
+      <div style="color:var(--live,#e74c3c);font-weight:700;margin-top:4px">🔴 ${esc(mc.clock)} ${mc.status_detail ? '· ' + esc(mc.status_detail) : ''}</div>
+      <div style="color:var(--muted);font-size:11px;margin-top:4px">Score en direct — mise à jour automatique toutes les 60 s ${tagPill('SOURCE DATA')}</div></div>`;
+  }
+  // Chronologie du jeu (buts, cartons, remplacements)
+  if (mc.timeline?.length) {
+    html += `<div class="card"><b>⏱ Chronologie du jeu ${tagPill('SOURCE DATA')}</b>
+      <div class="timeline" style="margin-top:10px">${mc.timeline.map((e) => `<div class="ev"><b>${esc(e.minute || '')}</b> ${e.icon} ${esc(e.players.join(', ') || e.kind || '')} <small style="color:var(--muted)">${e.team ? '(' + esc(e.team) + ')' : ''}</small></div>`).join('')}</div></div>`;
+  }
+  // Stats officielles en barres (possession, tirs…)
+  if (mc.live_stats?.length === 2) {
+    const [a, b] = mc.live_stats[0].home ? mc.live_stats : [mc.live_stats[1], mc.live_stats[0]];
+    const keys = Object.keys(a.values).filter((k) => k in b.values);
+    if (keys.length) {
+      html += `<div class="card"><b>📊 Statistiques du match ${tagPill('SOURCE DATA')}</b>
+        <div style="margin-top:10px">${keys.map((k) => {
+          const va = parseFloat(a.values[k]) || 0, vb = parseFloat(b.values[k]) || 0;
+          const tot = va + vb || 1;
+          return `<div style="margin-bottom:8px"><div style="display:flex;justify-content:space-between;font-size:12px"><span>${va}</span><span style="color:var(--muted)">${esc(k)}</span><span>${vb}</span></div>
+            <div style="display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--border,#333)">
+              <div style="width:${(va / tot * 100).toFixed(0)}%;background:var(--accent,#4c8dff)"></div>
+              <div style="width:${(vb / tot * 100).toFixed(0)}%;background:var(--muted,#888);opacity:.5"></div></div></div>`;
+        }).join('')}</div></div>`;
+    }
+  }
+  // Compositions officielles
+  if (mc.lineups?.length) {
+    html += `<div class="card"><b>📋 Compositions officielles ${tagPill('SOURCE DATA')}</b>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px">
+      ${mc.lineups.map((l) => `<div><div style="font-weight:700">${esc(l.team || '')} ${l.formation ? `<span class="pill">${esc(l.formation)}</span>` : ''}</div>
+        <div style="margin-top:6px;font-size:13px">${l.starters.map((p) => `<div>${p.num ? `<span style="color:var(--muted);display:inline-block;min-width:22px">${esc(p.num)}</span>` : ''}${esc(p.name)} ${p.pos ? `<small style="color:var(--muted)">${esc(p.pos)}</small>` : ''}</div>`).join('')}</div>
+        ${l.subs?.length ? `<div style="margin-top:6px;font-size:12px;color:var(--muted)">🔁 Entrés : ${l.subs.map((p) => esc(p.name)).join(', ')}</div>` : ''}</div>`).join('')}
+      </div></div>`;
+  }
+  // Scores exacts les plus probables (modèle)
+  if (mc.top_scores?.length && mc.status !== 'FINISHED') {
+    html += `<div class="card"><b>🎯 Scores exacts les plus probables ${tagPill('MODEL ESTIMATE')}</b>
+      <div class="prob-row" style="margin-top:10px">${mc.top_scores.map((s) => `<div class="prob-box"><div class="v">${esc(s.score)}</div><div class="l">${s.probability}%</div></div>`).join('')}</div></div>`;
+  }
+  // Cotes bookmaker publiées par ESPN
+  if (mc.espn_odds?.h) {
+    const o = mc.espn_odds;
+    html += `<div class="card"><b>💰 Cotes ${esc(o.bookmaker)} (via ESPN) ${tagPill('SOURCE DATA')}</b>
+      <div class="prob-row" style="margin-top:10px">
+        <div class="prob-box"><div class="v">${o.h}</div><div class="l">1</div></div>
+        <div class="prob-box"><div class="v">${o.d}</div><div class="l">N</div></div>
+        <div class="prob-box"><div class="v">${o.a}</div><div class="l">2</div></div>
+        ${o.ouLine != null && o.over ? `<div class="prob-box"><div class="v">${o.over}</div><div class="l">+${o.ouLine} buts</div></div>
+        <div class="prob-box"><div class="v">${o.under}</div><div class="l">-${o.ouLine} buts</div></div>` : ''}
+      </div></div>`;
+  }
+  return html;
+}
+
+// Rafraîchissement automatique du centre du match pendant un match en direct
+setInterval(() => {
+  if (!currentFixture || !currentMatch) return;
+  if (!['LIVE', 'HALFTIME', 'EXTRA_TIME', 'PENALTIES'].includes(currentMatch.status)) return;
+  const activeTab = document.querySelector('#mcTabs button.active');
+  if (activeTab?.dataset.tab === 'apercu') openFixture(currentFixture);
+}, 60_000);
+
 async function loadTab(tab, m) {
   const body = $('#mcBody');
   body.innerHTML = '<div class="loading">Chargement…</div>';
   try {
     if (tab === 'apercu') {
+      let mc = null;
+      try { mc = (await api(`/fixtures/${m.id}/matchcenter`)).data; } catch { /* sections absentes */ }
       body.innerHTML = `
+        ${renderMatchCenter(mc, m)}
         ${m.events?.length ? `<div class="card"><b>Timeline (SOURCE DATA — ${esc(m.events[0].source_id)})</b>
           <div class="timeline" style="margin-top:10px">${m.events.map((e) => `<div class="ev"><b>${e.minute != null ? e.minute + "'" : ''}</b> ${e.type === 'GOAL' ? '⚽' : e.type === 'PENALTY_GOAL' ? '⚽ (pen.)' : e.type === 'OWN_GOAL' ? '⚽ (csc)' : '•'} ${esc(e.player_name || '')} <small style="color:var(--muted)">(${e.team_side === 'home' ? esc(m.home_name) : esc(m.away_name)}, ${esc(e.detail || '')})</small></div>`).join('')}</div></div>` : ''}
         <div class="card"><b>Fiche du match</b><div class="kv" style="margin-top:8px">
@@ -801,7 +872,8 @@ function legRow(l) {
       <div class="time">${fmtDate(l.kickoff_utc)}</div></div>
     <div class="match-meta">
       <span class="pick-pill">🎯 ${esc(l.market)}/${esc(l.selection)}</span>
-      ${l.odds ? `<span>cote ${l.odds}</span>` : ''}
+      ${l.odds ? `<span>cote ${l.odds}${l.decision === 'ANALYSIS PICK' ? ' <small style="color:var(--muted)">(estimée modèle)</small>' : ''}</span>` : ''}
+      ${l.relaxed ? '<span class="pill" title="Aucun candidat n\u2019atteint le seuil expert de 62 % aujourd\u2019hui">meilleure dispo du jour</span>' : ''}
       <span>${esc(l.comp_name)}</span>
       ${res}
     </div></div>`;

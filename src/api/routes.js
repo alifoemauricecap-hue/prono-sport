@@ -106,6 +106,63 @@ api.get('/fixtures/:id', (req, res) => {
 });
 
 // ---------- Match Center : analyse / rapport expert / cotes ----------
+
+// CENTRE DU MATCH (§v3.3) : compositions officielles, chronologie du jeu,
+// stats en direct (possession, tirs…), score/horloge live, cotes ESPN et
+// scores exacts les plus probables du modèle. Cache court : 60 s en live.
+const mcCache = new Map(); // fixtureId -> { at, ttl, payload }
+api.get('/fixtures/:id/matchcenter', async (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
+  const f = db.prepare(`SELECT f.*, c.code AS comp_code FROM fixtures f
+      JOIN competitions c ON c.id=f.competition_id WHERE f.id=?`).get(id);
+  if (!f) return res.status(404).json({ error: 'NOT_FOUND' });
+  const isLive = ['LIVE', 'HALFTIME', 'EXTRA_TIME', 'PENALTIES'].includes(f.status);
+  const ttl = isLive ? 60_000 : (f.status === 'FINISHED' ? 24 * 3600_000 : 15 * 60_000);
+  const hit = mcCache.get(id);
+  if (hit && Date.now() - hit.at < hit.ttl) return res.json(hit.payload);
+  let espnData = null;
+  try {
+    const ext = JSON.parse(f.external_ids || '{}');
+    if (ext.espn) {
+      const { fetchMatchCenter } = await import('../providers/espn.js');
+      espnData = await fetchMatchCenter(f.comp_code, ext.espn, ttl);
+    }
+  } catch { /* section absente plutôt que fausse */ }
+  // Scores exacts les plus probables — MODEL ESTIMATE (lambdas de l'ensemble)
+  let topScores = null;
+  try {
+    const mo = db.prepare(`SELECT lambda_home, lambda_away FROM model_outputs
+        WHERE fixture_id=? AND model_name='ensemble' ORDER BY computed_at DESC LIMIT 1`).get(id);
+    if (mo?.lambda_home && mo?.lambda_away) {
+      const { scoreMatrix } = await import('../engine/poisson.js');
+      const M = scoreMatrix(mo.lambda_home, mo.lambda_away, 0);
+      const flat = [];
+      for (let h = 0; h < Math.min(M.length, 6); h++) {
+        for (let a = 0; a < Math.min(M[h].length, 6); a++) flat.push({ score: `${h}-${a}`, p: M[h][a] });
+      }
+      topScores = flat.sort((x, y) => y.p - x.p).slice(0, 5)
+        .map((s) => ({ score: s.score, probability: Math.round(s.p * 1000) / 10 }));
+    }
+  } catch { /* pas de modèle : section absente */ }
+  const payload = {
+    data: {
+      status: f.status, home_score: f.home_score, away_score: f.away_score,
+      clock: espnData?.clock || null, status_detail: espnData?.statusDetail || null,
+      lineups: espnData?.lineups?.length ? espnData.lineups : null,
+      timeline: espnData?.timeline?.length ? espnData.timeline : null,
+      live_stats: espnData?.stats?.some((s) => Object.keys(s.values).length) ? espnData.stats : null,
+      espn_odds: espnData?.odds || null,
+      top_scores: topScores,
+    },
+    tags: { lineups: 'SOURCE DATA (ESPN)', timeline: 'SOURCE DATA (ESPN)', live_stats: 'SOURCE DATA (ESPN)', espn_odds: 'SOURCE DATA (bookmaker via ESPN)', top_scores: 'MODEL ESTIMATE' },
+    note: espnData ? null : 'Détails ESPN indisponibles pour ce match (couverture partielle de la source) — les sections absentes ne sont jamais inventées.',
+  };
+  mcCache.set(id, { at: Date.now(), ttl, payload });
+  if (mcCache.size > 400) mcCache.delete(mcCache.keys().next().value);
+  res.json(payload);
+});
+
 api.get('/fixtures/:id/live', (req, res) => {
   const id = parseInt(req.params.id, 10);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
@@ -346,7 +403,7 @@ api.get(['/day', '/day/:date'], (req, res) => {
   const rows = db.prepare(`${FIXTURE_SELECT} WHERE date(f.kickoff_utc)=? ORDER BY f.kickoff_utc ASC LIMIT 500`).all(day);
   const preds = db.prepare(`SELECT p.fixture_id, p.market, p.selection, p.probability, p.odds, p.decision, p.result
       FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
-      WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET')`).all(day);
+      WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')`).all(day);
   const byFixture = {};
   for (const p of preds) if (!byFixture[p.fixture_id]) byFixture[p.fixture_id] = p;
   res.json({ data: {

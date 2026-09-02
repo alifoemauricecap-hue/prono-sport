@@ -204,6 +204,12 @@ async function bootstrapInner() {
   await syncResults();
   await syncLiveMatches();
   checkpointWal();
+  // COTES ESPN (§v3.3) : déblocage du Value Engine pour les matchs des 72 h
+  // sans cotes CSV (Saudi, Japon, MLS…) — cotes bookmaker réelles (pickcenter)
+  try {
+    const eo = await runJob('syncEspnOdds', 'espn', () => espn.syncEspnOdds(72, 60));
+    console.log(`[PRONO SPORT] Cotes ESPN : ${eo?.found ?? 0}/${eo?.scanned ?? 0} matchs cotés.`);
+  } catch (e) { console.error('[PRONO SPORT] Cotes ESPN :', e.message); }
   const preds = await generateUpcomingPredictions();
   console.log(`[PRONO SPORT] ${preds} analyses générées pour les matchs à venir.`);
   // Sélections du jour + jour courant + première passe de logos (ciblée, polie)
@@ -278,6 +284,12 @@ export function startScheduler() {
     const r = await runJob('syncEspnToday', 'espn', () => espn.syncEspnToday());
     if (r?.total) await updateLivePredictions(broadcast);
   }, 5 * 60 * 1000, 'espnToday', { offset: 45 * S });
+  // COTES ESPN (§v3.3) : matchs à venir sans cotes → pickcenter bookmaker,
+  // puis régénération des analyses débloquées
+  schedule(async () => {
+    const r = await runJob('syncEspnOdds', 'espn', () => espn.syncEspnOdds(72, 30));
+    if (r?.found) await generateUpcomingPredictions();
+  }, 20 * 60 * 1000, 'espnOdds', { offset: 9 * MIN + 30 * S });
   // DEEP RESEARCH ENGINE : recherche en ligne ciblée pour chaque match à venir
   // qui manque de données (historique équipe/compétition), puis régénération
   schedule(async () => {

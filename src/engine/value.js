@@ -120,9 +120,50 @@ export function analyzeMarkets(fixtureId, marketProbs, dataQuality, confidence) 
   candidates.sort((a, b) => b.ev - a.ev);
   const qualified = candidates.filter((c) => c.qualifies);
   if (!candidates.length) {
-    return { decision: 'NO QUALIFIED PICK', best: null, candidates, noBetReason: 'Aucun marché coté disponible pour ce match (DATA UNAVAILABLE côté cotes).' };
+    // AUCUN MARCHÉ COTÉ (§v3.3) : au lieu d'abandonner, on publie le
+    // PRONOSTIC D'ANALYSE — le marché le plus probable issu du modèle calibré,
+    // avec sa cote équitable 1/p. Étiquette MODEL ESTIMATE, jamais présenté
+    // comme une cote bookmaker. Seuils : p ≥ 0,58 et qualité de données OK.
+    const ANALYSIS_MIN_PROB = 0.58;
+    let ap = null;
+    for (const [marketCode, sels] of Object.entries(marketProbs)) {
+      for (const [sel, pModel] of Object.entries(sels)) {
+        if (pModel >= ANALYSIS_MIN_PROB && pModel < 0.985 && (!ap || pModel > ap.pModel)) {
+          ap = { market: marketCode, selection: sel, pModel: round4(pModel) };
+        }
+      }
+    }
+    if (ap && dataQuality >= cfg.minDataQuality) {
+      const fair = round2(1 / ap.pModel);
+      const best = {
+        market: ap.market, selection: ap.selection,
+        pModel: ap.pModel, pMarket: null, fairOdds: fair,
+        bestPrice: fair, bestBook: 'MODÈLE (cote équitable)', avgPrice: fair,
+        overround: null, edge: 0, ev: 0, dispersion: 0, qualifies: false,
+        analysisOnly: true,
+      };
+      return {
+        decision: 'ANALYSIS PICK', best, candidates: [],
+        noBetReason: null,
+        note: 'Aucune cote bookmaker disponible : pronostic issu de l\'analyse seule (marché le plus probable du modèle calibré, cote équitable 1/p — MODEL ESTIMATE).',
+      };
+    }
+    return { decision: 'NO QUALIFIED PICK', best: null, candidates, noBetReason: 'Aucun marché coté disponible et aucun marché du modèle n\'atteint le seuil d\'analyse (p ≥ 58 %).' };
   }
   if (!qualified.length) {
+    // MARCHÉS COTÉS MAIS SANS VALUE (§v3.3) : on publie quand même le
+    // PRONOSTIC D'ANALYSE (marché le plus probable, p ≥ 0,58) avec la vraie
+    // cote bookmaker et l'edge réel affiché — jamais présenté comme VALUE BET.
+    const byProb = [...candidates].filter((c) => c.pModel >= 0.58 && c.pModel < 0.985)
+      .sort((a, b) => b.pModel - a.pModel);
+    if (byProb.length && dataQuality >= cfg.minDataQuality) {
+      const best = { ...byProb[0], analysisOnly: true };
+      return {
+        decision: 'ANALYSIS PICK', best, candidates,
+        noBetReason: null,
+        note: `Pas de value détectée (edge ${(best.edge * 100).toFixed(1)}%) : pronostic d'analyse fondé sur la probabilité modèle la plus élevée (${(best.pModel * 100).toFixed(0)}%).`,
+      };
+    }
     const bestNear = candidates[0];
     return {
       decision: 'NO QUALIFIED PICK', best: null, candidates,

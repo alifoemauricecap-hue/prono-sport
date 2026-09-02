@@ -91,7 +91,7 @@ export function generatePrediction(fixtureId) {
         .run(fixtureId, now(), CONFIG.modelVersion, CONFIG.featuresVersion,
           b.market, b.selection, b.pModel, b.pMarket, b.bestPrice, b.fairOdds,
           b.edge, b.ev, confidence, dq.score, analysis.decision,
-          `Meilleure cote ${b.bestPrice} (${b.bestBook}) vs fair odds ${b.fairOdds}. Edge ${(b.edge * 100).toFixed(1)}%, EV ${(b.ev * 100).toFixed(1)}%.`);
+          analysis.note || `Meilleure cote ${b.bestPrice} (${b.bestBook}) vs fair odds ${b.fairOdds}. Edge ${(b.edge * 100).toFixed(1)}%, EV ${(b.ev * 100).toFixed(1)}%.`);
       if (analysis.decision === 'VALUE BET') {
         db.prepare(`INSERT OR IGNORE INTO value_bets
             (prediction_id, fixture_id, edge, ev, best_bookmaker, best_price, avg_price, created_at)

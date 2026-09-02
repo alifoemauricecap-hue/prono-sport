@@ -23,7 +23,7 @@ export async function buildReview(fixtureId) {
       WHERE f.id=?`).get(fixtureId);
   if (!f || f.status !== 'FINISHED' || f.home_score == null) return { status: 'NOT_FINISHED' };
 
-  const preds = db.prepare(`SELECT * FROM predictions WHERE fixture_id=? AND decision IN ('PICK','VALUE BET')`).all(fixtureId);
+  const preds = db.prepare(`SELECT * FROM predictions WHERE fixture_id=? AND decision IN ('PICK','VALUE BET','ANALYSIS PICK')`).all(fixtureId);
   const factors = [];
   const sources = new Set();
 
@@ -143,7 +143,7 @@ function writeSummary(f, legs, factors) {
 /** Worker : comptes rendus des matchs terminés récents portant un pronostic. */
 export async function generatePendingReviews(limit = 8) {
   const rows = db.prepare(`SELECT DISTINCT f.id FROM fixtures f
-      JOIN predictions p ON p.fixture_id=f.id AND p.decision IN ('PICK','VALUE BET')
+      JOIN predictions p ON p.fixture_id=f.id AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')
       LEFT JOIN prediction_reviews r ON r.fixture_id=f.id
       WHERE f.status='FINISHED' AND f.home_score IS NOT NULL AND r.fixture_id IS NULL
         AND f.kickoff_utc > datetime('now', '-72 hours')

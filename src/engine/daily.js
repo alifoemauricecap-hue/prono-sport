@@ -35,21 +35,38 @@ function dayCandidates(day) {
       JOIN fixtures f ON f.id=p.fixture_id
       JOIN competitions c ON c.id=f.competition_id
       JOIN teams ht ON ht.id=f.home_team_id JOIN teams at2 ON at2.id=f.away_team_id
-      WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET')
+      WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')
         AND p.result='PENDING' AND f.status IN ('SCHEDULED','UPCOMING')
         AND f.kickoff_utc > datetime('now')
       ORDER BY p.probability DESC`).all(day)
     // 1 seul pronostic par match (le plus probable)
-    .filter((r, i, arr) => arr.findIndex((x) => x.fixture_id === r.fixture_id) === i);
+    .filter((r, i, arr) => arr.findIndex((x) => x.fixture_id === r.fixture_id) === i)
+    // même match réel ingéré sous deux orthographes (ex. « Flamengo » ESPN vs
+    // « Flamengo RJ » CSV) : doublon si même coup d'envoi et que chaque nom de
+    // l'un est un préfixe complet du nom correspondant de l'autre (≥ 5 lettres)
+    .filter((r, i, arr) => !arr.slice(0, i).some((x) => sameRealMatch(x, r)));
 }
 
-/** EXPERT DU JOUR : les pronostics à plus forte probabilité de validation. */
+const normName = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+const prefixOf = (a, b) => a.length >= 5 && b.length >= 5 && (a.startsWith(b) || b.startsWith(a));
+// même match réel : mêmes équipes (préfixes complets) et coups d'envoi à moins
+// de 3 h d'écart (les sources divergent parfois d'1 h — fuseau/heure d'été)
+const sameRealMatch = (a, b) =>
+  Math.abs(new Date(a.kickoff_utc) - new Date(b.kickoff_utc)) <= 3 * 3600_000
+  && prefixOf(normName(a.home_name), normName(b.home_name))
+  && prefixOf(normName(a.away_name), normName(b.away_name));
+
+/** EXPERT DU JOUR : les pronostics à plus forte probabilité de validation.
+ *  §v3.3 : si aucun candidat n'atteint le seuil expert (62 %), on publie les
+ *  meilleures disponibilités du jour (≥ 55 %) clairement étiquetées. */
 function buildExpertLegs(day) {
   const shrink = getCalibrationShrink();
-  return dayCandidates(day)
-    .map((c) => ({ ...c, adjusted: round4(c.probability * shrink) }))
-    .filter((c) => c.adjusted >= EXPERT_MIN_PROB && c.data_quality >= CONFIG.value.minDataQuality)
-    .slice(0, EXPERT_MAX_LEGS);
+  const all = dayCandidates(day).map((c) => ({ ...c, adjusted: round4(c.probability * shrink) }))
+    .filter((c) => c.data_quality >= CONFIG.value.minDataQuality);
+  const strict = all.filter((c) => c.adjusted >= EXPERT_MIN_PROB).slice(0, EXPERT_MAX_LEGS);
+  if (strict.length) return strict;
+  return all.filter((c) => c.adjusted >= 0.55).slice(0, 3)
+    .map((c) => ({ ...c, relaxed: true }));
 }
 
 /** COMBINÉ SAFE : sous-ensemble maximisant la probabilité combinée,
@@ -62,6 +79,14 @@ function buildComboLegs(day) {
     .filter((c) => c.odds && c.odds > 1.05 && c.data_quality >= CONFIG.value.minDataQuality)
     .sort((a, b) => b.adjusted - a.adjusted)
     .slice(0, 12);
+  // §v3.3 : fenêtre stricte [2.5, 3.6] d'abord ; si introuvable, fenêtre
+  // élargie [2.2, 4.2] (toujours au plus proche de 3) — jamais de section vide
+  // quand au moins 2 jambes fiables existent.
+  return searchCombo(pool, COMBO_ODDS_MIN, COMBO_ODDS_MAX)
+    || searchCombo(pool, 2.2, 4.2);
+}
+
+function searchCombo(pool, oddsMin, oddsMax) {
   let best = null;
   const n = pool.length;
   for (let mask = 1; mask < (1 << n); mask++) {
@@ -69,7 +94,7 @@ function buildComboLegs(day) {
     for (let i = 0; i < n; i++) if (mask & (1 << i)) legs.push(pool[i]);
     if (legs.length < 2 || legs.length > COMBO_MAX_LEGS) continue;
     const odds = legs.reduce((a, l) => a * l.odds, 1);
-    if (odds < COMBO_ODDS_MIN || odds > COMBO_ODDS_MAX) continue;
+    if (odds < oddsMin || odds > oddsMax) continue;
     const prob = legs.reduce((a, l) => a * l.adjusted, 1);
     const score = prob - Math.abs(odds - COMBO_TARGET_ODDS) * 0.01; // priorité probabilité, cote ~3 en départage
     if (!best || score > best.score) best = { legs, odds: round2(odds), prob: round4(prob), score };
@@ -85,6 +110,8 @@ function legPayload(c) {
     odds: c.odds, kickoff_utc: c.kickoff_utc,
     home_name: c.home_name, away_name: c.away_name,
     comp_code: c.comp_code, comp_name: c.comp_name,
+    decision: c.decision || null,          // 'VALUE BET' | 'PICK' | 'ANALYSIS PICK'
+    relaxed: c.relaxed || false,           // meilleure disponibilité du jour (< seuil expert)
     result: 'PENDING',
   };
 }
@@ -177,7 +204,7 @@ export function getDailySelection(day, type) {
 export function dailyStats(day = todayUtc()) {
   const rows = db.prepare(`SELECT p.result, COUNT(*) AS n
       FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
-      WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET')
+      WHERE date(f.kickoff_utc)=? AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')
       GROUP BY p.result`).all(day);
   const counts = { WIN: 0, LOSS: 0, VOID: 0, PENDING: 0 };
   for (const r of rows) counts[r.result] = r.n;
@@ -202,7 +229,7 @@ export function weeklyStats(weeksBack = 0) {
   const preds = db.prepare(`SELECT p.result, COUNT(*) AS n, AVG(p.probability) AS avg_p,
       SUM(CASE WHEN p.result='WIN' THEN p.odds-1 WHEN p.result='LOSS' THEN -1 ELSE 0 END) AS units
       FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
-      WHERE date(f.kickoff_utc) BETWEEN ? AND ? AND p.decision IN ('PICK','VALUE BET')
+      WHERE date(f.kickoff_utc) BETWEEN ? AND ? AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')
       GROUP BY p.result`).all(from, to);
   const perMarket = db.prepare(`SELECT p.market, p.result, COUNT(*) AS n
       FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
@@ -212,7 +239,7 @@ export function weeklyStats(weeksBack = 0) {
       WHERE day BETWEEN ? AND ? GROUP BY type, status`).all(from, to);
   const days = db.prepare(`SELECT date(f.kickoff_utc) AS day, p.result, COUNT(*) AS n
       FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
-      WHERE date(f.kickoff_utc) BETWEEN ? AND ? AND p.decision IN ('PICK','VALUE BET')
+      WHERE date(f.kickoff_utc) BETWEEN ? AND ? AND p.decision IN ('PICK','VALUE BET','ANALYSIS PICK')
       GROUP BY day, p.result ORDER BY day`).all(from, to);
   return { from, to, predictions: preds, per_market: perMarket, selections, per_day: days, data_tag: 'CALCULATED DATA' };
 }
