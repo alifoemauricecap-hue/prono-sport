@@ -14,7 +14,7 @@ import { fetchMatchWeather, geocode } from '../providers/openMeteo.js';
 import { getLiveHistory } from '../engine/live.js';
 import { teamProfile, computeStandings } from '../engine/context.js';
 import { dailyStats, weeklyStats, getDailySelection, getLessons, todayUtc, ensureDailySelections, sameRealMatch } from '../engine/daily.js';
-import { goldenPicks, transparencyReport, headToHead } from '../engine/insights.js';
+import { goldenPicks, transparencyReport, headToHead, teamForm, modelVsMarket, calendarCounts, explainPick, selectionsHistory } from '../engine/insights.js';
 
 export const api = express.Router();
 
@@ -354,7 +354,16 @@ api.get('/teams/:id/profile', (req, res) => {
 api.get('/competitions/:code/standings', (req, res) => {
   const comp = db.prepare(`SELECT id, name FROM competitions WHERE code=?`).get(req.params.code);
   if (!comp) return res.status(404).json({ error: 'NOT_FOUND' });
-  res.json({ data: { competition: comp.name, ...computeStandings(comp.id) } });
+  const st = computeStandings(comp.id);
+  // v3.5 : forme 5 derniers matchs par équipe (série V/N/D)
+  const standings = (st.standings || []).map((row) => {
+    let form5 = null;
+    try {
+      form5 = teamForm(row.teamId, 5).games.map((g) => g.result); // 'W'|'D'|'L' canonique (affichage FR côté client)
+    } catch { /* forme absente plutôt que fausse */ }
+    return { ...row, form5 };
+  });
+  res.json({ data: { competition: comp.name, ...st, standings } });
 });
 
 api.get('/teams/:id', (req, res) => {
@@ -422,6 +431,53 @@ api.get('/fixtures/:id/h2h', (req, res) => {
   if (!f) return res.status(404).json({ error: 'NOT_FOUND' });
   res.json({ data: headToHead(f.home_team_id, f.away_team_id, 10),
     tags: { all: 'SOURCE DATA — confrontations réelles en base' } });
+});
+
+// 📈 Forme & momentum des deux équipes d'un match (v3.5)
+api.get('/fixtures/:id/form', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
+  const f = db.prepare(`SELECT home_team_id, away_team_id FROM fixtures WHERE id=?`).get(id);
+  if (!f) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ data: { home: teamForm(f.home_team_id), away: teamForm(f.away_team_id) },
+    tags: { all: 'CALCULATED DATA — agrégats des matchs réels en base' } });
+});
+
+// 🧮 Comparateur modèle vs marché (v3.5)
+api.get('/model-vs-market', (req, res) => {
+  res.json({ data: modelVsMarket({ hours: 48, limit: 60 }),
+    note: 'Écarts entre la probabilité du modèle calibré et la probabilité implicite du marché (cotes réelles, marge retirée). Tri par écart absolu décroissant.' });
+});
+
+// 📅 Calendrier ±7 jours : matchs + pronostics par jour (v3.5)
+api.get('/calendar', (req, res) => {
+  res.json({ data: calendarCounts(7, 7) });
+});
+
+// 🔍 « Pourquoi ce pronostic ? » (v3.5)
+api.get('/predictions/:id/explain', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
+  const ex = explainPick(id);
+  if (!ex) return res.status(404).json({ error: 'NOT_FOUND' });
+  res.json({ data: ex });
+});
+
+// Variante par match : explication du pronostic le plus récent du match
+api.get('/fixtures/:id/explain', (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: 'BAD_ID' });
+  const p = db.prepare(`SELECT id FROM predictions WHERE fixture_id=?
+      AND decision IN ('PICK','VALUE BET','ANALYSIS PICK')
+      ORDER BY created_at DESC LIMIT 1`).get(id);
+  if (!p) return res.json({ data: null, note: 'Aucun pronostic publié sur ce match.' });
+  res.json({ data: explainPick(p.id) });
+});
+
+// 🧾 Archives Expert / Combiné avec résultats (v3.5)
+api.get('/selections/history', (req, res) => {
+  const type = ['EXPERT', 'SAFE_COMBO'].includes(req.query.type) ? req.query.type : null;
+  res.json({ data: selectionsHistory(type, Math.min(parseInt(req.query.limit, 10) || 30, 90)) });
 });
 
 // Statut de pronostics par ids (suivi de bankroll virtuelle côté client)

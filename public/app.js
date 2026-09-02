@@ -67,6 +67,7 @@ window.nav = (view, arg) => {
     home: renderHome, live: renderLive, upcoming: renderUpcoming, finished: renderFinished,
     expert: renderExpert, combo: renderCombo, tracking: renderTracking,
     golden: renderGolden, transparency: renderTransparency, bankroll: renderBankroll,
+    modelmarket: renderModelMarket,
     competitions: renderCompetitions, value: renderValue, predictions: renderPredictions,
     favorites: renderFavorites, coverage: renderCoverage, sources: renderSources,
     backtest: renderBacktest, admin: renderAdmin,
@@ -103,18 +104,21 @@ async function renderLive() {
 const dayLabel = (offset) => {
   const d = new Date(Date.now() + offset * 86400000);
   const iso = d.toISOString().slice(0, 10);
-  const label = offset === 0 ? "Aujourd'hui" : offset === 1 ? 'Demain'
+  const label = offset === 0 ? "Aujourd'hui" : offset === 1 ? 'Demain' : offset === -1 ? 'Hier'
     : d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
   return { iso, label };
 };
 
 async function renderUpcoming(dayIso) {
-  const days = Array.from({ length: 7 }, (_, i) => dayLabel(i));
-  const active = dayIso || days[0].iso;
-  const dj = await api('/day/' + active);
-  const fx = dj.data.fixtures.filter((f) => !['FINISHED'].includes(f.status) || active !== days[0].iso);
-  const tabs = `<div class="day-tabs">${days.map((d) =>
-    `<button class="${d.iso === active ? 'active' : ''}" onclick="nav('upcoming','${d.iso}')">${esc(d.label)}</button>`).join('')}</div>`;
+  // v3.5 : calendrier ±7 jours avec compteurs de matchs et de pronostics
+  const days = Array.from({ length: 15 }, (_, i) => dayLabel(i - 7));
+  const active = dayIso || dayLabel(0).iso;
+  const [dj, cal] = await Promise.all([api('/day/' + active), api('/calendar').catch(() => ({ data: [] }))]);
+  const counts = {}; for (const c of (cal.data || [])) counts[c.day] = c;
+  const tabs = `<div class="day-tabs" style="overflow-x:auto;white-space:nowrap">${days.map((d) => {
+    const c = counts[d.iso];
+    return `<button class="${d.iso === active ? 'active' : ''}" onclick="nav('upcoming','${d.iso}')">${esc(d.label)}${c ? `<small style="display:block;font-size:9px;opacity:.75">${c.fixtures} m. · ${c.picks} 🎯</small>` : ''}</button>`;
+  }).join('')}</div>`;
   const st = dj.data.stats;
   const bar = st && (st.counts.WIN + st.counts.LOSS + st.counts.PENDING) > 0
     ? `<div class="info">Pronostics du jour : ✅ ${st.counts.WIN} validés · ❌ ${st.counts.LOSS} non validés · ⏳ ${st.counts.PENDING} en cours${st.win_rate != null ? ` · taux réel ${(st.win_rate * 100).toFixed(0)}%` : ''}</div>` : '';
@@ -153,12 +157,14 @@ window.openStandings = async (code) => {
     const d = r.data;
     box.innerHTML = `<div class="card"><b>Classement — ${esc(d.competition)} (saison ${esc(String(d.season))}) ${tagPill('CALCULATED DATA')}</b>
       <div class="table-wrap" style="margin-top:8px"><table>
-      <tr><th class="num">#</th><th>Équipe</th><th class="num">J</th><th class="num">G</th><th class="num">N</th><th class="num">P</th><th class="num">BP</th><th class="num">BC</th><th class="num">Diff</th><th class="num">Pts</th></tr>
-      ${d.standings.map((s) => `<tr style="cursor:pointer" onclick="openTeam(${s.teamId})">
+      <tr><th class="num">#</th><th>Équipe</th><th>Forme</th><th class="num">J</th><th class="num">G</th><th class="num">N</th><th class="num">P</th><th class="num">BP</th><th class="num">BC</th><th class="num">Diff</th><th class="num">Pts</th></tr>
+      ${d.standings.map((s, i, arr) => `<tr style="cursor:pointer" onclick="openTeam(${s.teamId})" class="${i < 4 ? 'zone-top' : i >= arr.length - 3 ? 'zone-bottom' : ''}">
         <td class="num">${s.rank}</td><td>${badge(s.badge_url, s.name)} ${esc(s.name || '')}</td>
+        <td>${(s.form5 || []).map(formChip).join('') || '—'}</td>
         <td class="num">${s.played}</td><td class="num">${s.won}</td><td class="num">${s.drawn}</td><td class="num">${s.lost}</td>
         <td class="num">${s.gf}</td><td class="num">${s.ga}</td><td class="num">${s.gd > 0 ? '+' : ''}${s.gd}</td><td class="num"><b>${s.points}</b></td></tr>`).join('')}
       </table></div>
+      <div style="display:flex;gap:14px;font-size:11px;color:var(--muted);margin-top:6px"><span><span class="zone-dot top"></span> places européennes (indicatif)</span><span><span class="zone-dot bottom"></span> zone de relégation (indicatif)</span></div>
       <small style="color:var(--muted)">${esc(d.note)}</small></div>`;
     box.scrollIntoView({ behavior: 'smooth' });
   } catch (e) {
@@ -468,11 +474,13 @@ async function loadTab(tab, m) {
   body.innerHTML = '<div class="loading">Chargement…</div>';
   try {
     if (tab === 'apercu') {
-      let mc = null, h2h = [];
+      let mc = null, h2h = [], form = null;
       try { mc = (await api(`/fixtures/${m.id}/matchcenter`)).data; } catch { /* sections absentes */ }
       try { h2h = (await api(`/fixtures/${m.id}/h2h`)).data || []; } catch { /* absent */ }
+      try { form = (await api(`/fixtures/${m.id}/form`)).data; } catch { /* absent */ }
       body.innerHTML = `
         ${renderMatchCenter(mc, m)}
+        ${form ? renderFormCard(form, m) : ''}
         ${h2h.length ? `<div class="card"><b>⚔️ Face-à-face — ${h2h.length} dernière(s) confrontation(s) ${tagPill('SOURCE DATA')}</b>
           <div style="margin-top:10px">${h2h.map((g) => `<div class="match-row" onclick="event.stopPropagation();openFixture(${g.id})" style="cursor:pointer">
             <div class="team"><span>${esc(g.home_name)} <b>${g.home_score}-${g.away_score}</b> ${esc(g.away_name)}</span></div>
@@ -570,6 +578,21 @@ async function loadTab(tab, m) {
     } else if (tab === 'analyse' || tab === 'prono') {
       const r = await api(`/fixtures/${m.id}/analysis`);
       body.innerHTML = renderAnalysis(r.data, m, tab);
+      // 🔍 « Pourquoi ce pronostic ? » (v3.5) — injecté en tête de l'onglet prono
+      if (tab === 'prono') {
+        try {
+          const pr = await api(`/fixtures/${m.id}/explain`);
+          if (pr.data) {
+            const html = `<div class="card" style="border-left:3px solid var(--accent,#4c8dff)">
+              <b>🔍 Pourquoi ce pronostic ? ${tagPill('CALCULATED DATA')}</b>
+              <ul style="margin:10px 0 0 18px;line-height:1.7;font-size:13px">${pr.data.reasons.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>
+              <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+                <button class="fav-btn" onclick="sharePick('${esc(m.home_name + ' vs ' + m.away_name).replace(/'/g, "\\'")}','${esc(pr.data.label).replace(/'/g, "\\'")}',${(pr.data.probability * 100).toFixed(0)},null)">📤 Partager ce pick</button>
+              </div></div>`;
+            body.insertAdjacentHTML('afterbegin', html);
+          }
+        } catch { /* pas de pronostic sur ce match */ }
+      }
     } else if (tab === 'bilan') {
       const rv = await api(`/reviews/${m.id}`);
       if (!rv.data) {
@@ -889,7 +912,7 @@ function legRow(l) {
   return `<div class="match-row" onclick="openFixture(${l.fixture_id})">
     <div class="team"><span>${esc(l.home_name)} vs ${esc(l.away_name)}</span></div>
     <div class="match-mid"><div class="score">${(l.adjusted_probability * 100).toFixed(0)}%</div>
-      <div class="time">${fmtDate(l.kickoff_utc)}</div></div>
+      <div class="time">${fmtDate(l.kickoff_utc)}</div>${l.result === 'PENDING' ? countdown(l.kickoff_utc) : ''}</div>
     <div class="match-meta">
       <span class="pick-pill">🎯 ${esc(l.market)}/${esc(l.selection)}</span>
       ${l.odds ? `<span>cote ${l.odds}${l.decision === 'ANALYSIS PICK' ? ' <small style="color:var(--muted)">(estimée modèle)</small>' : ''}</span>` : ''}
@@ -941,8 +964,9 @@ async function renderCombo() {
 }
 
 async function renderTracking() {
-  const [daily, weekly, lessons, reviews] = await Promise.all([
+  const [daily, weekly, lessons, reviews, histE, histC] = await Promise.all([
     api('/stats/daily'), api('/stats/weekly'), api('/lessons'), api('/reviews'),
+    api('/selections/history?type=EXPERT&limit=30'), api('/selections/history?type=SAFE_COMBO&limit=30'),
   ]);
   const d = daily.data, w = weekly.data;
   const settledW = w.predictions.reduce((acc, x) => { acc[x.result] = x; return acc; }, {});
@@ -976,6 +1000,11 @@ async function renderTracking() {
       ${lessons.data.length ? lessons.data.map((l) => `<div class="ev" style="margin-top:6px"><b>${esc(l.scope)}</b> — ${esc(l.observation)}<br><small style="color:var(--muted)">Échantillon : ${l.sample_size} · Action : ${esc(l.adjustment)}</small></div>`).join('')
         : '<div class="info">Pas encore assez de pronostics réglés pour tirer des leçons — elles apparaîtront automatiquement.</div>'}
     </div>
+    <h2 class="section">🧾 Archives — Expert du jour & Combiné Safe</h2>
+    <div class="grid-2">
+      ${archiveCard('🥇 Expert du jour', histE.data || [])}
+      ${archiveCard('🛡️ Combiné Safe', histC.data || [])}
+    </div>
     <h2 class="section">📝 Derniers comptes rendus post-match</h2>
     ${reviews.data.length ? reviews.data.map((r) => `<div class="match-row" onclick="openFixture(${r.fixture_id})">
       <div class="team"><span>${esc(r.home_name)} ${r.home_score}-${r.away_score} ${esc(r.away_name)}</span></div>
@@ -991,15 +1020,40 @@ const starsHtml = (n) => '<span class="stars">' + '★'.repeat(n) + '☆'.repeat
 
 async function renderGolden() {
   const r = await api('/golden-picks');
-  const picks = r.data || [];
+  window._goldenPicks = r.data || [];
+  window._goldenNote = r.note || '';
   app.innerHTML = `<h2 class="section">💎 PRONOS D'OR <span class="count">les paris les plus sûrs des 48 h</span></h2>
     <div class="info" style="margin-bottom:12px">Classés par probabilité calibrée du modèle (MODEL ESTIMATE). La fiabilité = taux de réussite <b>réel</b> du marché sur les pronostics déjà réglés (CALCULATED DATA).</div>
-    ${!picks.length ? `<div class="info">${esc(r.note)}</div>`
+    <div class="card" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:13px">
+      <b>Filtres :</b>
+      <select id="gfStars" onchange="paintGolden()"><option value="0">⭐ toutes étoiles</option><option value="2">★★ et +</option><option value="3">★★★ et +</option><option value="4">★★★★ et +</option></select>
+      <select id="gfOdds" onchange="paintGolden()"><option value="0">cote : toutes</option><option value="1.3">≥ 1,30</option><option value="1.5">≥ 1,50</option><option value="1.8">≥ 1,80</option></select>
+      <select id="gfMarket" onchange="paintGolden()"><option value="">tous marchés</option>${[...new Set(window._goldenPicks.map((p) => p.market))].map((m) => `<option value="${esc(m)}">${esc(mktFr(m))}</option>`).join('')}</select>
+      <select id="gfComp" onchange="paintGolden()"><option value="">toutes ligues</option>${[...new Set(window._goldenPicks.map((p) => p.comp_name))].map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join('')}</select>
+      <select id="gfSort" onchange="paintGolden()"><option value="prob">tri : probabilité</option><option value="time">tri : coup d'envoi</option><option value="odds">tri : cote</option></select>
+    </div>
+    <div id="goldenList"></div>`;
+  paintGolden();
+}
+
+window.paintGolden = () => {
+  const stars = parseInt(document.getElementById('gfStars')?.value || '0', 10);
+  const minOdds = parseFloat(document.getElementById('gfOdds')?.value || '0');
+  const mkt = document.getElementById('gfMarket')?.value || '';
+  const comp = document.getElementById('gfComp')?.value || '';
+  const sort = document.getElementById('gfSort')?.value || 'prob';
+  let picks = (window._goldenPicks || []).filter((p) =>
+    p.stars >= stars && (!minOdds || (p.odds && p.odds >= minOdds))
+    && (!mkt || p.market === mkt) && (!comp || p.comp_name === comp));
+  picks = picks.sort((a, b) => sort === 'time' ? new Date(a.kickoff_utc) - new Date(b.kickoff_utc)
+    : sort === 'odds' ? (b.odds || 0) - (a.odds || 0) : b.probability - a.probability);
+  document.getElementById('goldenList').innerHTML = !picks.length
+    ? `<div class="info">${window._goldenPicks.length ? 'Aucun pick ne correspond aux filtres.' : esc(window._goldenNote)}</div>`
     : picks.map((p) => `<div class="card gold-card" onclick="openFixture(${p.fixture_id})" style="cursor:pointer">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
         <div>
           <div style="font-weight:700">${badge(p.home_badge, p.home_name)} ${esc(p.home_name)} vs ${esc(p.away_name)} ${badge(p.away_badge, p.away_name)}</div>
-          <div style="color:var(--muted);font-size:12px;margin-top:2px">${esc(p.comp_name)} · ${fmtDate(p.kickoff_utc)}</div>
+          <div style="color:var(--muted);font-size:12px;margin-top:2px">${esc(p.comp_name)} · ${fmtDate(p.kickoff_utc)} ${countdown(p.kickoff_utc)}</div>
         </div>
         <div style="text-align:right">
           <div style="font-size:20px;font-weight:800">${(p.probability * 100).toFixed(1)}%</div>
@@ -1011,10 +1065,11 @@ async function renderGolden() {
         <span>
           ${p.odds ? `cote ${p.odds}${p.decision === 'ANALYSIS PICK' ? ' <small style="color:var(--muted)">(estimée)</small>' : ''}` : ''}
           ${p.reliability != null ? ` · fiabilité marché <b>${(p.reliability * 100).toFixed(0)}%</b>` : ' · fiabilité : historique en construction'}
+          <button class="fav-btn" onclick="event.stopPropagation();sharePick('${esc(p.home_name + ' vs ' + p.away_name).replace(/'/g, "\\'")}','${esc(p.label).replace(/'/g, "\\'")}',${(p.probability * 100).toFixed(0)},${p.odds || 'null'})">📤</button>
           <button class="fav-btn" onclick="event.stopPropagation();placeBet(${p.prediction_id},${p.fixture_id},${p.odds || 'null'},'${esc(p.label).replace(/'/g, "\\'")}','${esc(p.home_name + ' vs ' + p.away_name).replace(/'/g, "\\'")}')">💰 Miser (virtuel)</button>
         </span>
-      </div></div>`).join('')}`;
-}
+      </div></div>`).join('');
+};
 
 /* ---------------- 📊 TRANSPARENCE (v3.4) ---------------- */
 
@@ -1147,3 +1202,95 @@ function notifyUser(title, body) {
     if (Notification.permission === 'granted') notifyUser('🔔 Notifications activées', 'Expert du jour, comptes rendus post-match et paris virtuels gagnés.');
   });
 })();
+
+/* ---------------- v3.5 : forme, comparateur, explications, archives, filtres, partage, compte à rebours ---------------- */
+
+const formChip = (r) => `<span class="form-chip ${r === 'W' ? 'w' : r === 'L' ? 'l' : 'd'}">${r === 'W' ? 'V' : r === 'L' ? 'D' : 'N'}</span>`; // entrée canonique W/D/L → affichage FR V/N/D
+const trendIcon = (t) => t === 'UP' ? '📈 en hausse' : t === 'DOWN' ? '📉 en baisse' : '➡️ stable';
+const n1f = (x) => x == null ? '—' : (Math.round(x * 10) / 10).toFixed(1);
+
+function renderFormCard(form, m) {
+  const side = (f, name, isHome) => {
+    if (!f?.games?.length) return `<div><b>${esc(name)}</b><div class="info" style="margin-top:6px">Pas encore d'historique en base pour cette équipe.</div></div>`;
+    return `<div>
+      <div style="font-weight:700">${esc(name)} <small style="color:var(--muted)">${trendIcon(f.momentum.trend)}</small></div>
+      <div style="margin:6px 0">${f.games.slice(0, 10).map((g) => formChip(g.result)).join('')}</div>
+      <div style="font-size:12px;color:var(--muted)">
+        5 derniers : <b>${n1f(f.momentum.last5_ppg)}</b> pt/m (avant : ${n1f(f.momentum.prev5_ppg)})<br>
+        ${isHome ? `Domicile : ${n1f(f.home.gf)} marqués / ${n1f(f.home.ga)} encaissés (${f.home.w}V/${f.home.n})` : `Extérieur : ${n1f(f.away.gf)} marqués / ${n1f(f.away.ga)} encaissés (${f.away.w}V/${f.away.n})`}
+      </div>
+      <div style="font-size:11px;color:var(--muted);margin-top:6px">${f.games.slice(0, 5).map((g) => `${g.day.slice(5)} ${g.home ? 'vs' : '@'} ${esc(g.opponent)} <b>${g.gf}-${g.ga}</b>`).join('<br>')}</div>
+    </div>`;
+  };
+  return `<div class="card"><b>📈 Forme & momentum ${tagPill('CALCULATED DATA')}</b>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:10px">
+      ${side(form.home, m.home_name, true)}${side(form.away, m.away_name, false)}
+    </div></div>`;
+}
+
+/* compte à rebours + partage */
+const countdown = (iso) => {
+  const ms = new Date(iso) - Date.now();
+  if (ms <= 0) return '';
+  const h = Math.floor(ms / 3600000), mn = Math.floor((ms % 3600000) / 60000);
+  const txt = h >= 24 ? `dans ${Math.floor(h / 24)} j ${h % 24} h` : h > 0 ? `dans ${h} h ${String(mn).padStart(2, '0')}` : `dans ${mn} min`;
+  return `<span class="pill ${ms < 3600000 ? 'lastchance' : 'countdown'}">${ms < 3600000 ? '⏳ Dernière chance — ' : '⏰ '}${txt}</span>`;
+};
+
+window.sharePick = async (match, label, prob, odds) => {
+  const text = `⚽ PRONO SPORT\n${match}\n🎯 ${label} — probabilité ${prob}%${odds ? ` (cote ${odds})` : ''}\n${location.origin}`;
+  try {
+    if (navigator.share) { await navigator.share({ title: 'Prono Sport', text }); return; }
+    await navigator.clipboard.writeText(text);
+    alert('📋 Pick copié — collez-le dans WhatsApp, Telegram…');
+  } catch { /* annulé */ }
+};
+
+/* 🧮 COMPARATEUR MODÈLE vs MARCHÉ */
+async function renderModelMarket() {
+  const r = await api('/model-vs-market');
+  const rows = r.data || [];
+  app.innerHTML = `<h2 class="section">🧮 MODÈLE vs MARCHÉ <span class="count">écarts sur les cotes réelles (48 h)</span></h2>
+    <div class="info" style="margin-bottom:12px">${esc(r.note)}</div>
+    ${!rows.length ? '<div class="info">Aucun pronostic coté en attente dans la fenêtre — état honnête.</div>'
+    : `<div class="card"><table class="table"><thead><tr><th>Match</th><th>Sélection</th><th>Modèle</th><th>Marché</th><th>Écart</th><th>Cote</th></tr></thead><tbody>
+      ${rows.map((x) => `<tr style="cursor:pointer" onclick="openFixture(${x.fixture_id})">
+        <td>${esc(x.home_name)} vs ${esc(x.away_name)}<br><small style="color:var(--muted)">${esc(x.comp_name)} · ${fmtDate(x.kickoff_utc)}</small></td>
+        <td>${esc(x.label)}</td>
+        <td><b>${(x.probability * 100).toFixed(1)}%</b></td>
+        <td>${x.market_probability != null ? (x.market_probability * 100).toFixed(1) + '%' : '—'}</td>
+        <td style="color:${x.edge >= 0 ? 'var(--ok)' : 'var(--loss)'};font-weight:700">${x.edge >= 0 ? '+' : ''}${(x.edge * 100).toFixed(1)} pts</td>
+        <td>${x.odds ?? '—'}${x.decision === 'VALUE BET' ? ' 💎' : ''}</td>
+      </tr>`).join('')}</tbody></table></div>`}`;
+}
+
+/* 🔍 POURQUOI CE PRONOSTIC ? — carte injectable */
+async function explainCard(predictionId) {
+  try {
+    const ex = (await api(`/predictions/${predictionId}/explain`)).data;
+    return `<div class="card" style="border-left:3px solid var(--accent,#4c8dff)">
+      <b>🔍 Pourquoi ce pronostic ? ${tagPill('CALCULATED DATA')}</b>
+      <ul style="margin:10px 0 0 18px;line-height:1.7;font-size:13px">${ex.reasons.map((r) => `<li>${esc(r)}</li>`).join('')}</ul>
+      <div style="color:var(--muted);font-size:11px;margin-top:8px">${esc(ex.tag)}</div></div>`;
+  } catch { return ''; }
+}
+
+/* 🧾 Archives Expert / Combiné Safe (v3.5) */
+function archiveCard(title, rows) {
+  const stIcon = (s) => s === 'WON' ? '✅' : s === 'LOST' ? '❌' : s === 'LOCKED' ? '🔒' : s === 'VOID' ? '⚪' : '⏳';
+  const settled = rows.filter((r) => r.status === 'WON' || r.status === 'LOST');
+  const won = settled.filter((r) => r.status === 'WON').length;
+  return `<div class="card"><b>${title} — historique</b>
+    <div style="color:var(--muted);font-size:12px;margin:4px 0 8px">${settled.length
+      ? `${won}/${settled.length} réglées gagnantes (${((won / settled.length) * 100).toFixed(0)}%) — CALCULATED DATA`
+      : 'Aucune sélection encore réglée — le bilan se construira automatiquement.'}</div>
+    ${!rows.length ? '<div class="info">Aucune sélection archivée.</div>'
+      : rows.map((r) => `<details style="margin-top:6px;border:1px solid var(--border,#243);border-radius:8px;padding:6px 10px">
+        <summary style="cursor:pointer;font-size:13px">${stIcon(r.status)} <b>${esc(r.day)}</b> — ${r.legs.length} match(s), prob. ${(r.combined_probability * 100).toFixed(1)}%, cote ${r.combined_odds}</summary>
+        ${r.legs.map((l) => `<div class="ev" style="margin-top:6px;font-size:12.5px">
+          ${l.result === 'WIN' ? '✅' : l.result === 'LOSS' ? '❌' : '⏳'} <b>${esc(l.home_name)} vs ${esc(l.away_name)}</b><br>
+          <small style="color:var(--muted)">${esc(mktFr(l.market))} · ${esc(l.selection)} · p ${(l.adjusted_probability * 100).toFixed(0)}%${l.odds ? ' · cote ' + l.odds : ''}</small>
+        </div>`).join('')}
+      </details>`).join('')}
+  </div>`;
+}

@@ -193,3 +193,21 @@ tr:hover td { background: rgba(255,255,255,.02); }
 .gold-card { border-left: 3px solid var(--gold); }
 .gold-card:hover { transform: translateY(-1px); transition: transform .15s; }
 #notifBtn { background: none; border: 1px solid var(--border, #2a3350); border-radius: 8px; padding: 6px 10px; cursor: pointer; font-size: 15px; }
+
+/* ============ v3.5 ============ */
+.form-chip{display:inline-block;width:18px;height:18px;line-height:18px;text-align:center;border-radius:4px;font-size:10.5px;font-weight:800;margin-right:2px;color:#fff}
+.form-chip.w{background:#1f9d55}
+.form-chip.d{background:#8a8f98}
+.form-chip.l{background:#d64545}
+tr.zone-top td:first-child{box-shadow:inset 3px 0 0 #1f9d55}
+tr.zone-bottom td:first-child{box-shadow:inset 3px 0 0 #d64545}
+.zone-dot{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:4px;vertical-align:middle}
+.zone-dot.top{background:#1f9d55}
+.zone-dot.bottom{background:#d64545}
+.pill.lastchance{background:rgba(214,69,69,.15);color:#ff7b7b;border:1px solid rgba(214,69,69,.4);animation:lastchance-pulse 1.6s ease-in-out infinite}
+@keyframes lastchance-pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pill.countdown{background:rgba(76,141,255,.12);border:1px solid rgba(76,141,255,.35);color:var(--muted)}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media(max-width:820px){.grid-2{grid-template-columns:1fr}}
+.mvm-table td,.mvm-table th{white-space:nowrap}
+.cal-tab-count{display:block;font-size:10px;color:var(--muted);font-weight:400}

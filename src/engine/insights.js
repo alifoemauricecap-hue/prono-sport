@@ -144,3 +144,135 @@ export function headToHead(homeId, awayId, limit = 10) {
       ORDER BY f.kickoff_utc DESC LIMIT ?`)
     .all(homeId, awayId, awayId, homeId, limit);
 }
+
+/* ---------------- v3.5 : forme, comparateur, calendrier, explications, archives ---------------- */
+
+/** 📈 Forme d'une équipe : N derniers matchs terminés (toutes compétitions en
+ *  base), série V/N/D, splits domicile-extérieur, momentum (5 derniers vs 5
+ *  précédents en points/match) — SOURCE DATA agrégée (CALCULATED DATA). */
+export function teamForm(teamId, limit = 10) {
+  const rows = db.prepare(`SELECT f.id, f.kickoff_utc, f.home_team_id, f.away_team_id,
+      f.home_score AS hs, f.away_score AS as2,
+      ht.name AS home_name, at2.name AS away_name, c.name AS comp_name
+      FROM fixtures f
+      JOIN teams ht ON ht.id=f.home_team_id JOIN teams at2 ON at2.id=f.away_team_id
+      JOIN competitions c ON c.id=f.competition_id
+      WHERE (f.home_team_id=? OR f.away_team_id=?) AND f.status='FINISHED'
+        AND f.home_score IS NOT NULL
+      ORDER BY f.kickoff_utc DESC LIMIT ?`).all(teamId, teamId, limit);
+  const games = rows.map((r) => {
+    const home = r.home_team_id === teamId;
+    const gf = home ? r.hs : r.as2, ga = home ? r.as2 : r.hs;
+    return {
+      fixture_id: r.id, day: r.kickoff_utc.slice(0, 10), home,
+      opponent: home ? r.away_name : r.home_name, comp: r.comp_name,
+      gf, ga, result: gf > ga ? 'W' : gf < ga ? 'L' : 'D',
+    };
+  });
+  const pts = (g) => g.result === 'W' ? 3 : g.result === 'D' ? 1 : 0;
+  const last5 = games.slice(0, 5), prev5 = games.slice(5, 10);
+  const avg = (arr, fn) => arr.length ? arr.reduce((a, g) => a + fn(g), 0) / arr.length : null;
+  const split = (loc) => {
+    const g = games.filter((x) => x.home === loc);
+    return { n: g.length, gf: avg(g, (x) => x.gf), ga: avg(g, (x) => x.ga),
+      w: g.filter((x) => x.result === 'W').length };
+  };
+  return {
+    games,
+    momentum: {
+      last5_ppg: avg(last5, pts), prev5_ppg: avg(prev5, pts),
+      trend: (avg(last5, pts) ?? 0) > (avg(prev5, pts) ?? 0) ? 'UP'
+        : (avg(last5, pts) ?? 0) < (avg(prev5, pts) ?? 0) ? 'DOWN' : 'FLAT',
+    },
+    home: split(true), away: split(false),
+    avg_gf: avg(games, (g) => g.gf), avg_ga: avg(games, (g) => g.ga),
+  };
+}
+
+/** 🧮 Comparateur modèle vs marché : pronostics pré-match en attente disposant
+ *  d'une probabilité de marché (cotes réelles), triés par écart absolu. */
+export function modelVsMarket({ hours = 48, limit = 60 } = {}) {
+  const rows = db.prepare(`SELECT p.id AS prediction_id, p.fixture_id, p.market, p.selection,
+      p.probability, p.market_probability, p.odds, p.edge, p.ev, p.decision,
+      f.kickoff_utc, c.name AS comp_name, c.code AS comp_code,
+      ht.name AS home_name, at2.name AS away_name
+      FROM predictions p
+      JOIN fixtures f ON f.id=p.fixture_id
+      JOIN competitions c ON c.id=f.competition_id
+      JOIN teams ht ON ht.id=f.home_team_id JOIN teams at2 ON at2.id=f.away_team_id
+      WHERE p.result='PENDING' AND p.market_probability IS NOT NULL
+        AND f.status IN ('SCHEDULED','UPCOMING')
+        AND f.kickoff_utc BETWEEN datetime('now') AND datetime('now', ?)
+      ORDER BY ABS(p.edge) DESC LIMIT ?`).all(`+${hours} hours`, limit);
+  return rows
+    .filter((r, i, arr) => arr.findIndex((x) => x.fixture_id === r.fixture_id && x.market === r.market) === i)
+    .map((r) => ({ ...r, gap: r.market_probability != null ? Math.round((r.probability - r.market_probability) * 10000) / 10000 : null, label: marketLabel(r.market, r.selection) }));
+}
+
+/** 📅 Calendrier : nombre de matchs et de pronostics par jour (fenêtre ±7 j). */
+export function calendarCounts(daysBack = 7, daysAhead = 7) {
+  const rows = db.prepare(`SELECT date(f.kickoff_utc) AS day,
+      COUNT(DISTINCT f.id) AS fixtures,
+      COUNT(DISTINCT CASE WHEN p.decision IN ('PICK','VALUE BET','ANALYSIS PICK') THEN p.fixture_id END) AS picks
+      FROM fixtures f
+      LEFT JOIN predictions p ON p.fixture_id=f.id
+      WHERE date(f.kickoff_utc) BETWEEN date('now', ?) AND date('now', ?)
+      GROUP BY day ORDER BY day`).all(`-${daysBack} days`, `+${daysAhead} days`);
+  const byDay = new Map(rows.map((r) => [r.day, r]));
+  const out = [];
+  for (let i = -daysBack; i <= daysAhead; i++) {
+    const day = new Date(Date.now() + i * 86400_000).toISOString().slice(0, 10);
+    out.push(byDay.get(day) || { day, fixtures: 0, picks: 0 });
+  }
+  return out;
+}
+
+/** 🔍 « Pourquoi ce pronostic ? » : justification factuelle générée depuis les
+ *  données réelles (forme, splits, modèle vs marché) — jamais de texte inventé :
+ *  chaque phrase est adossée à un chiffre vérifiable en base. */
+export function explainPick(predictionId) {
+  const p = db.prepare(`SELECT p.*, f.home_team_id, f.away_team_id, f.kickoff_utc,
+      ht.name AS home_name, at2.name AS away_name, c.name AS comp_name
+      FROM predictions p JOIN fixtures f ON f.id=p.fixture_id
+      JOIN teams ht ON ht.id=f.home_team_id JOIN teams at2 ON at2.id=f.away_team_id
+      JOIN competitions c ON c.id=f.competition_id WHERE p.id=?`).get(predictionId);
+  if (!p) return null;
+  const fh = teamForm(p.home_team_id, 10), fa = teamForm(p.away_team_id, 10);
+  const serie = (f) => f.games.slice(0, 5).map((g) => g.result === 'W' ? 'V' : g.result === 'L' ? 'D' : 'N').join('-') || '—';
+  const n1 = (x) => x == null ? '—' : (Math.round(x * 10) / 10).toFixed(1);
+  const reasons = [];
+  reasons.push(`Le modèle donne ${(p.probability * 100).toFixed(0)} % à « ${marketLabel(p.market, p.selection)} » (${p.comp_name}).`);
+  reasons.push(`Forme récente — ${p.home_name} : ${serie(fh)} (${n1(fh.momentum.last5_ppg)} pt/match sur les 5 derniers) ; ${p.away_name} : ${serie(fa)} (${n1(fa.momentum.last5_ppg)} pt/match).`);
+  if (fh.home.n >= 3) reasons.push(`À domicile, ${p.home_name} marque ${n1(fh.home.gf)} but(s) et encaisse ${n1(fh.home.ga)} par match (${fh.home.w} victoire(s) sur ${fh.home.n}).`);
+  if (fa.away.n >= 3) reasons.push(`À l'extérieur, ${p.away_name} marque ${n1(fa.away.gf)} but(s) et encaisse ${n1(fa.away.ga)} par match (${fa.away.w} victoire(s) sur ${fa.away.n}).`);
+  if (fh.momentum.trend !== 'FLAT') reasons.push(`Dynamique ${p.home_name} : ${fh.momentum.trend === 'UP' ? 'en hausse 📈' : 'en baisse 📉'} (${n1(fh.momentum.prev5_ppg)} → ${n1(fh.momentum.last5_ppg)} pt/match).`);
+  if (fa.momentum.trend !== 'FLAT') reasons.push(`Dynamique ${p.away_name} : ${fa.momentum.trend === 'UP' ? 'en hausse 📈' : 'en baisse 📉'} (${n1(fa.momentum.prev5_ppg)} → ${n1(fa.momentum.last5_ppg)} pt/match).`);
+  if (p.market_probability != null) {
+    const diff = (p.probability - p.market_probability) * 100;
+    reasons.push(diff > 0
+      ? `Le marché n'estime cette issue qu'à ${(p.market_probability * 100).toFixed(0)} % : le modèle voit ${diff.toFixed(1)} point(s) de valeur en plus (cote ${p.odds}).`
+      : `Le marché estime cette issue à ${(p.market_probability * 100).toFixed(0)} % — pronostic retenu pour sa probabilité, pas pour sa valeur (écart ${diff.toFixed(1)} pt).`);
+  } else if (p.decision === 'ANALYSIS PICK') {
+    reasons.push(`Aucune cote bookmaker disponible : pronostic d'analyse pure, cote équitable ${p.fair_odds ?? p.odds} (= 1/probabilité).`);
+  }
+  if (p.data_quality != null) reasons.push(`Qualité des données de ce match : ${(p.data_quality * 100).toFixed(0)} % (sources, profondeur d'historique, cotes).`);
+  return {
+    prediction_id: p.id, fixture_id: p.fixture_id,
+    market: p.market, selection: p.selection, label: marketLabel(p.market, p.selection),
+    decision: p.decision, probability: p.probability,
+    reasons,
+    tag: 'CALCULATED DATA — chaque affirmation provient des matchs réels en base.',
+  };
+}
+
+/** 🧾 Archives des sélections quotidiennes (Expert / Combiné) avec résultats. */
+export function selectionsHistory(type = null, limit = 30) {
+  const rows = type
+    ? db.prepare(`SELECT * FROM daily_selections WHERE type=? ORDER BY day DESC LIMIT ?`).all(type, limit)
+    : db.prepare(`SELECT * FROM daily_selections ORDER BY day DESC, type LIMIT ?`).all(limit * 2);
+  return rows.map((r) => ({
+    day: r.day, type: r.type, status: r.status,
+    combined_odds: r.combined_odds, combined_probability: r.combined_probability,
+    legs: JSON.parse(r.legs_json || '[]'),
+  }));
+}

@@ -158,3 +158,15 @@ couverture, elle n'invente rien.
   jour, comptes rendus post-match, paris virtuels gagnés.
 - **💰 Bankroll virtuelle** (localStorage, 1000 u. fictives) : suivi de mises
   virtuelles réglées sur les résultats réels — pédagogique, aucun argent réel.
+
+## v3.5 — Forme, comparateur, calendrier, explications, archives
+
+| Fonction | Source des données | Tag |
+|---|---|---|
+| 📈 Forme & momentum (`/api/fixtures/:id/form`) | Matchs **réellement terminés** en base (toutes compétitions ingérées) : série W/D/L des 10 derniers, points/match 5 derniers vs 5 précédents, splits domicile/extérieur | CALCULATED DATA |
+| 🧮 Modèle vs Marché (`/api/model-vs-market`) | Pronostics pré-match en attente disposant d'une **probabilité implicite de marché** (cotes réelles ingérées, marge retirée) ; écart = p(modèle) − p(marché) | CALCULATED DATA (p marché = SOURCE DATA transformée) |
+| 📅 Calendrier ±7 j (`/api/calendar`) | Comptes de matchs et de pronostics par jour, directement depuis les tables `fixtures`/`predictions` ; les jours sans match affichent 0 (jamais de remplissage inventé) | CALCULATED DATA |
+| 🔍 « Pourquoi ce pronostic ? » (`/api/predictions/:id/explain`, `/api/fixtures/:id/explain`) | Phrases générées **uniquement** à partir de chiffres vérifiables en base (forme réelle, splits, dynamique, écart modèle/marché, qualité des données). Aucun texte libre inventé. | CALCULATED DATA |
+| 🧾 Archives Expert/Combiné (`/api/selections/history`) | Table `daily_selections` : sélections immuables (§34) avec legs, statut réglé et bilan réel | SOURCE + CALCULATED DATA |
+| 🏆 Classements enrichis | `form5` calculée depuis les résultats réels de la saison ; zones colorées **indicatives** (top 4 / 3 derniers), non présentées comme officielles | CALCULATED DATA |
+| ⏰ Compte à rebours / 📤 partage | Heure de coup d'envoi (SOURCE DATA) ; partage via l'API Web Share du navigateur, aucun envoi serveur | SOURCE DATA |
