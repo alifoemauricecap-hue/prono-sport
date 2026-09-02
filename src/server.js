@@ -45,4 +45,14 @@ setTimeout(() => {
     });
 }, graceMs);
 
+// SENTINELLE DE BOUCLE D'ÉVÉNEMENTS : si un calcul synchrone gèle le serveur
+// plus de 2 s, on le journalise avec l'ampleur du gel — indispensable pour
+// diagnostiquer un échec de healthcheck côté hébergeur (0,1 CPU partagé).
+let lastTick = Date.now();
+setInterval(() => {
+  const lag = Date.now() - lastTick - 5000;
+  if (lag > 2000) console.warn(`[loop-lag] boucle d'événements gelée ~${lag} ms`);
+  lastTick = Date.now();
+}, 5000).unref?.();
+
 process.on('SIGTERM', () => server.close(() => process.exit(0)));

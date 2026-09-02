@@ -229,50 +229,72 @@ async function bootstrapInner() {
 }
 
 let timers = [];
+
+// FILE D'EXCLUSION MUTUELLE : sur petite instance (0,1 CPU), deux gros
+// travaux simultanés étouffent le processeur → healthcheck en échec →
+// redémarrage par l'hébergeur (mesuré en prod). Les travaux lourds passent
+// donc un par un ; les légers (live, checkpoint) restent immédiats.
+let heavyChain = Promise.resolve();
+function runExclusive(fn) {
+  const p = heavyChain.then(() => fn());
+  heavyChain = p.catch(() => {}); // une erreur ne bloque jamais la file
+  return p;
+}
+
 export function startScheduler() {
-  const schedule = (fn, ms, name) => {
-    const t = setInterval(() => fn().catch((e) => console.error(`[worker ${name}]`, e.message)), ms);
-    t.unref?.();
-    timers.push(t);
+  // offset : premier déclenchement décalé pour désynchroniser les robots.
+  // Sans cela, tous les intervalles divisant 60 min, les 14 robots partaient
+  // EN MÊME TEMPS aux minutes 60, 120, 180… (pic CPU fatal à 0,1 CPU).
+  const schedule = (fn, ms, name, { offset = 0, exclusive = true } = {}) => {
+    const run = () => (exclusive ? runExclusive(fn) : fn())
+      .catch((e) => console.error(`[worker ${name}]`, e.message));
+    const start = () => { const t = setInterval(run, ms); t.unref?.(); timers.push(t); };
+    if (offset > 0) {
+      const t0 = setTimeout(() => { run(); start(); }, offset);
+      t0.unref?.();
+      timers.push(t0);
+    } else start();
   };
-  schedule(syncLiveMatches, CONFIG.syncIntervals.live, 'live');
-  schedule(syncFixtures, CONFIG.syncIntervals.upcoming, 'fixtures');
-  schedule(syncResults, CONFIG.syncIntervals.results, 'results');
-  schedule(async () => { await syncHistoricalData(); await syncOpenLigaHistory(); }, CONFIG.syncIntervals.historical, 'historical');
-  schedule(async () => checkSourceHealth(), CONFIG.syncIntervals.discovery, 'discovery');
-  schedule(generateUpcomingPredictions, 30 * 60 * 1000, 'predictions');
+  const S = 1000, MIN = 60 * 1000;
+  // live : léger et prioritaire → jamais dans la file exclusive, jamais décalé
+  schedule(syncLiveMatches, CONFIG.syncIntervals.live, 'live', { exclusive: false });
+  schedule(syncFixtures, CONFIG.syncIntervals.upcoming, 'fixtures', { offset: 3 * MIN });
+  schedule(syncResults, CONFIG.syncIntervals.results, 'results', { offset: 7 * MIN });
+  schedule(async () => { await syncHistoricalData(); await syncOpenLigaHistory(); }, CONFIG.syncIntervals.historical, 'historical', { offset: 45 * MIN });
+  schedule(async () => checkSourceHealth(), CONFIG.syncIntervals.discovery, 'discovery', { offset: 50 * MIN });
+  schedule(generateUpcomingPredictions, 30 * 60 * 1000, 'predictions', { offset: 18 * MIN });
   // monde : fixtures cotées + ligues dynamiques découvertes
-  schedule(async () => { await runJob('syncWorldFixtures', 'football-data-couk', () => fdcuk.syncWorldFixtures()); }, 20 * 60 * 1000, 'worldFixtures');
-  schedule(async () => { await runJob('syncDiscoveredLeagues', 'thesportsdb', () => tsdb.syncDiscoveredLeagues()); }, 20 * 60 * 1000, 'dynamicLeagues');
+  schedule(async () => { await runJob('syncWorldFixtures', 'football-data-couk', () => fdcuk.syncWorldFixtures()); }, 20 * 60 * 1000, 'worldFixtures', { offset: 11 * MIN });
+  schedule(async () => { await runJob('syncDiscoveredLeagues', 'thesportsdb', () => tsdb.syncDiscoveredLeagues()); }, 20 * 60 * 1000, 'dynamicLeagues', { offset: 13 * MIN });
   // retest des candidats PENDING (rate-limités) toutes les 12 min
   schedule(async () => {
     const pending = db.prepare(`SELECT COUNT(*) AS n FROM discovered_leagues WHERE status='PENDING'`).get().n;
     if (pending > 0) await runJob('discoveryRetry', 'thesportsdb', () => tsdb.processDiscoveryBatch());
-  }, 12 * 60 * 1000, 'discoveryRetry');
+  }, 12 * 60 * 1000, 'discoveryRetry', { offset: 6 * MIN });
   // cycle de découverte complet toutes les 6 h
-  schedule(runDiscoveryCycle, 6 * 60 * 60 * 1000, 'discoveryFull');
+  schedule(runDiscoveryCycle, 6 * 60 * 60 * 1000, 'discoveryFull', { offset: 55 * MIN });
   // SUIVI DU JOUR ESPN (ciblé) : scores/statuts des ligues jouant aujourd'hui
   schedule(async () => {
     const r = await runJob('syncEspnToday', 'espn', () => espn.syncEspnToday());
     if (r?.total) await updateLivePredictions(broadcast);
-  }, 5 * 60 * 1000, 'espnToday');
+  }, 5 * 60 * 1000, 'espnToday', { offset: 45 * S });
   // DEEP RESEARCH ENGINE : recherche en ligne ciblée pour chaque match à venir
   // qui manque de données (historique équipe/compétition), puis régénération
   schedule(async () => {
     const r = await runDeepResearch();
     if (r?.regenerated) broadcast('research', { gaps: r.gaps, regenerated: r.regenerated });
-  }, 15 * 60 * 1000, 'deepResearch');
+  }, 15 * 60 * 1000, 'deepResearch', { offset: 8 * MIN + 30 * S });
   // SÉLECTIONS DU JOUR : Expert + Combiné Safe (création/verrouillage/règlement)
   schedule(async () => {
     ensureDailySelections();
     const r = lockAndSettleSelections();
     if (r.settled) broadcast('selections', r);
-  }, 10 * 60 * 1000, 'dailySelections');
+  }, 10 * 60 * 1000, 'dailySelections', { offset: 4 * MIN });
   // COMPTES RENDUS POST-MATCH : recherche ciblée + rédaction factuelle
   schedule(async () => {
     const n = await runJob('postMatchReviews', null, () => generatePendingReviews());
     if (n) broadcast('reviews', { created: n });
-  }, 10 * 60 * 1000, 'postMatchReviews');
+  }, 10 * 60 * 1000, 'postMatchReviews', { offset: 5 * MIN });
   // LOGOS : équipes des matchs des 72 h + compétitions — recherche ciblée polie
   schedule(async () => {
     await runJob('logoBackfill', 'thesportsdb', async () => {
@@ -280,7 +302,7 @@ export function startScheduler() {
       const b = await tsdb.backfillCompetitionLogos(8);
       return a.found + b.found;
     });
-  }, 60 * 60 * 1000, 'logoBackfill');
+  }, 60 * 60 * 1000, 'logoBackfill', { offset: 22 * MIN });
   // BASCULE DE JOUR : au changement de date UTC, rafraîchir les matchs du
   // nouveau jour, relancer recherches + analyses + sélections + leçons
   schedule(async () => {
@@ -298,7 +320,7 @@ export function startScheduler() {
     ensureDailySelections(day);
     computeLessons(); // leçons recalculées chaque jour sur les résultats réels
     broadcast('newday', { day });
-  }, 5 * 60 * 1000, 'dayRollover');
+  }, 5 * 60 * 1000, 'dayRollover', { offset: 2 * MIN + 10 * S });
   // RATTRAPAGE AUTONOME : si le chargement initial a été gêné par la source
   // (rate limit hébergeur), on complète progressivement — jamais de données
   // manquantes définitives tant que la source redevient joignable.
@@ -324,9 +346,9 @@ export function startScheduler() {
       await syncOpenLigaHistory();
       await generateUpcomingPredictions();
     }
-  }, 25 * 60 * 1000, 'ingestionRecovery');
+  }, 25 * 60 * 1000, 'ingestionRecovery', { offset: 16 * MIN });
   // durabilité : checkpoint WAL toutes les 5 min
-  schedule(async () => checkpointWal(), 5 * 60 * 1000, 'walCheckpoint');
+  schedule(async () => checkpointWal(), 5 * 60 * 1000, 'walCheckpoint', { offset: 100 * S, exclusive: false });
   console.log('[PRONO SPORT] Scheduler démarré (live 60s, fixtures 10min, résultats 15min, monde 20min, découverte 6h).');
 }
 export function stopScheduler() { timers.forEach(clearInterval); timers = []; }
