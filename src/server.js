@@ -1,58 +1,58 @@
-// PRONO SPORT — Serveur principal
-// LES DONNÉES D'ABORD. LES MODÈLES ENSUITE. LA DÉCISION EN DERNIER.
 import express from 'express';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { CONFIG } from './config.js';
-import { api } from './api/routes.js';
-import { bootstrap, startScheduler } from './workers/scheduler.js';
+import { setupRoutes } from './api/routes.js';
+import db from './db.js';
+import { startCronJobs } from './engine/cron.js';
+import { syncExtraLeagues, syncWorldFixtures, syncLiveMatches } from './engine/sync.js';
+import { initCloud, setupCloudSchema, pullFromCloud } from './cloud_sync.js';
+import { generatePredictions } from './engine/predictions.js';
+import { evaluatePredictions } from './engine/reviews.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
-app.disable('x-powered-by');
+const port = process.env.PORT || 3000;
 
-// En-têtes de sécurité (§78)
-app.use((req, res, next) => {
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  res.setHeader('Referrer-Policy', 'no-referrer');
-  next();
+app.use(express.static('public'));
+app.use(express.json());
+
+setupRoutes(app);
+
+async function bootstrap() {
+  console.log("[BOOTSTRAP] Démarrage du serveur PRONO SPORT...");
+  
+  // 1. Initialize Cloud Backup
+  const cloudEnabled = initCloud();
+  if (cloudEnabled) {
+    await setupCloudSchema();
+    await pullFromCloud(); // Restaure les données précieuses AVANT de tout recalculer
+  }
+
+  // 2. Synchronisation initiale si nécessaire
+  const counts = db.prepare(`SELECT count(*) as c FROM fixtures`).get();
+  if (counts.c < 100) {
+      console.log("[BOOTSTRAP] Base de données locale vide, ingestion massive en cours...");
+      await syncWorldFixtures(true);
+      await syncExtraLeagues();
+      console.log("[BOOTSTRAP] Ingestion de base terminée.");
+  } else {
+      console.log(`[BOOTSTRAP] Base de données locale existante (${counts.c} matchs).`);
+  }
+  
+  // 3. Sync Live & Entraînement/Évaluation
+  console.log("[BOOTSTRAP] Mise à jour des matchs du jour...");
+  await syncLiveMatches();
+  
+  console.log("[BOOTSTRAP] Génération des pronostics initiaux et évaluation...");
+  await generatePredictions();
+  await evaluatePredictions();
+
+  // 4. Lancement des tâches planifiées
+  startCronJobs();
+  
+  app.listen(port, '0.0.0.0', () => {
+    console.log(`[BOOTSTRAP] Serveur web prêt sur le port ${port}`);
+  });
+}
+
+bootstrap().catch(err => {
+  console.error("[FATAL] Erreur lors du bootstrap:", err);
+  process.exit(1);
 });
-
-app.use('/api', api);
-// route API inconnue → 404 JSON explicite (jamais avalée par le catch-all SPA)
-app.use('/api', (req, res) => res.status(404).json({ error: 'NOT_FOUND', note: 'Endpoint API inexistant.' }));
-app.use(express.static(path.join(__dirname, '..', 'public')));
-app.get('/{*splat}', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
-
-const server = app.listen(CONFIG.port, CONFIG.host, () => {
-  console.log(`\n  PRONO SPORT — http://${CONFIG.host}:${CONFIG.port} (${CONFIG.env})`);
-  console.log('  Les données d\'abord. Les modèles ensuite. La décision en dernier.\n');
-});
-
-// Bootstrap asynchrone : le serveur répond immédiatement, les données arrivent en continu.
-// FENÊTRE DE GRÂCE (production) : l'ingestion ne démarre que 75 s après le boot,
-// pour que la vérification de santé du déploiement (health check de l'hébergeur)
-// s'exécute sur un serveur totalement disponible — sinon, sur 0,1 CPU, le
-// déploiement peut être rejeté et l'ancienne version conservée indéfiniment.
-const graceMs = CONFIG.env === 'production' ? 75_000 : 0;
-setTimeout(() => {
-  bootstrap()
-    .then(() => startScheduler())
-    .catch((e) => {
-      console.error('[PRONO SPORT] Bootstrap partiel :', e.message);
-      startScheduler(); // les workers réessaieront (idempotents, §14)
-    });
-}, graceMs);
-
-// SENTINELLE DE BOUCLE D'ÉVÉNEMENTS : si un calcul synchrone gèle le serveur
-// plus de 2 s, on le journalise avec l'ampleur du gel — indispensable pour
-// diagnostiquer un échec de healthcheck côté hébergeur (0,1 CPU partagé).
-let lastTick = Date.now();
-setInterval(() => {
-  const lag = Date.now() - lastTick - 5000;
-  if (lag > 2000) console.warn(`[loop-lag] boucle d'événements gelée ~${lag} ms`);
-  lastTick = Date.now();
-}, 5000).unref?.();
-
-process.on('SIGTERM', () => server.close(() => process.exit(0)));

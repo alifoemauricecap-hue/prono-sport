@@ -17,6 +17,7 @@
   "description": "Plateforme professionnelle mondiale d'intelligence football",
   "type": "module",
   "dependencies": {
+    "@libsql/client": "^0.18.0",
     "better-sqlite3": "^12.11.1",
     "express": "^5.2.1"
   },
