@@ -1,4 +1,4 @@
-import db from '../db.js';
+import { db } from '../db.js';
 import { pushToCloud } from '../cloud_sync.js';
 
 export async function evaluatePredictions() {
