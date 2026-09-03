@@ -1,8 +1,8 @@
 import express from 'express';
 import { setupRoutes } from './api/routes.js';
 import db from './db.js';
-import { startCronJobs } from './engine/cron.js';
-import { syncExtraLeagues, syncWorldFixtures, syncLiveMatches } from './engine/sync.js';
+import { startScheduler, syncLiveMatches } from './workers/scheduler.js';
+import * as fdcuk from './providers/footballDataCoUk.js';
 import { initCloud, setupCloudSchema, pullFromCloud } from './cloud_sync.js';
 import { generatePredictions } from './engine/predictions.js';
 import { evaluatePredictions } from './engine/reviews.js';
@@ -29,8 +29,8 @@ async function bootstrap() {
   const counts = db.prepare(`SELECT count(*) as c FROM fixtures`).get();
   if (counts.c < 100) {
       console.log("[BOOTSTRAP] Base de données locale vide, ingestion massive en cours...");
-      await syncWorldFixtures(true);
-      await syncExtraLeagues();
+      await fdcuk.syncWorldFixtures();
+      await fdcuk.syncExtraLeagues();
       console.log("[BOOTSTRAP] Ingestion de base terminée.");
   } else {
       console.log(`[BOOTSTRAP] Base de données locale existante (${counts.c} matchs).`);
@@ -45,7 +45,7 @@ async function bootstrap() {
   await evaluatePredictions();
 
   // 4. Lancement des tâches planifiées
-  startCronJobs();
+  startScheduler();
   
   app.listen(port, '0.0.0.0', () => {
     console.log(`[BOOTSTRAP] Serveur web prêt sur le port ${port}`);
